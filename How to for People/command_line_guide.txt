@@ -1,0 +1,201 @@
+CP_VISUALIZER - WHAT THE COMMAND MEANS (BEGINNER'S GUIDE)
+==========================================================
+
+The command we are explaining:
+
+    python3 cp_visualizer.py e423.dat e423_a28.cp --V 34 --spacing 3 --thickness 0.125 \
+            --buckets 6 --bucket-spacing adaptive --alpha 23 --save out/e423
+
+In plain English, this line says:
+
+    "Run the Cp visualizer on the E423 airfoil, using the pressure data from
+     e423_a28.cp. Turn the pressure coefficients into real pressures for a
+     34 m/s airspeed, scale them for ribs that are 3 inches apart and 1/8 inch
+     thick, split each surface into 6 averaged sections, tell the program the
+     wing was at 23 degrees angle of attack, and save the results in a folder
+     called 'out' with names starting with 'e423'."
+
+
+----------------------------------------------------------------------------
+1. THE PARTS, ONE AT A TIME
+----------------------------------------------------------------------------
+
+python3
+    The program that runs Python code. Everything after it is handed to
+    Python. (On some computers the name is just "python".)
+
+cp_visualizer.py
+    The tool itself: the script file Python runs. It must be in the folder
+    your terminal is currently in, or you must type its full path, e.g.
+    ~/Downloads/cp_visualizer.py
+
+e423.dat
+    INPUT FILE 1, the airfoil shape. A text file listing (x, y) points around
+    the outline of the airfoil, usually with chord length 1. This is the file
+    you download from an airfoil database or save from XFOIL.
+
+e423_a28.cp
+    INPUT FILE 2, the pressure data. The file XFOIL writes with its CPWR
+    command: one Cp (pressure coefficient) value for each point on the
+    surface.
+
+    The order matters: the airfoil file always comes first, the Cp file
+    second.
+
+    Note: "a28" is only part of the file name; the program does not read the
+    angle from it. If the file name and --alpha disagree, the program has no
+    way to notice. Make sure --alpha is the angle you actually ran in XFOIL.
+
+--V 34
+    Airspeed, in meters per second (34 m/s is about 76 mph).
+    The program uses it to work out the dynamic pressure:
+        q = 1/2 x rho x V^2  =  0.5 x 1.225 x 34^2  =  about 708 Pa
+    If you leave --V out, the program stays "non-dimensional" and just shows
+    Cp-scaled numbers instead of real pressures.
+
+--spacing 3
+    Distance between neighboring ribs (here 3 inches).
+
+--thickness 0.125
+    Thickness of one rib (here 1/8 inch = 0.125 inch).
+    Together, spacing and thickness set the correction factor
+        K = spacing / thickness = 3 / 0.125 = 24
+    Why: the covering film collects air pressure over a 3-inch-wide strip,
+    but in the stress model that load lands on a rib edge only 1/8 inch wide,
+    so the pressure on that edge is 24 times larger.
+    Spacing and thickness just need to be in the SAME unit (both inches or
+    both mm). You can type --K 24 instead of these two options.
+
+--buckets 6
+    Cut each surface (upper and lower) into 6 sections and compute the
+    average pressure on each one. That gives 12 sections total.
+    Each section can become one spline or face in your CAD/FEA model, with
+    one uniform pressure applied to it.
+
+--bucket-spacing adaptive
+    How the 6 sections are sized. "adaptive" makes them short where the
+    pressure changes quickly (near the nose) and long where it barely
+    changes (the back of the wing). Other choices:
+        arc     - all sections the same length along the surface
+        cosine  - sections bunched toward the nose
+        x       - sections the same width along the chord line
+
+--alpha 23
+    Angle of attack, in degrees, that XFOIL used for this Cp file. The
+    program needs it to turn its force totals into lift (Cl) and pressure
+    drag, so you can compare them with the numbers XFOIL printed. It does
+    not change the pressures themselves.
+
+--save out/e423
+    Save the results. "out" is a folder (created automatically if it does
+    not exist) and "e423" is the start of each file name. You get:
+        out/e423.png           the picture
+        out/e423_points.csv    pressure at every surface point
+        out/e423_buckets.csv   the averaged section table (for your FEA)
+
+The backslash ( \ ) at the end of the first line
+    Not an option. It just tells the terminal "the command continues on the
+    next line." You can delete it and write everything on one line instead.
+    On Windows PowerShell use a backtick ( ` ) instead; in Windows CMD use ^.
+
+
+----------------------------------------------------------------------------
+2. THE SCHEMATIC (what goes where)
+----------------------------------------------------------------------------
+
+  python3  cp_visualizer.py  <AIRFOIL FILE>  <CP FILE>  [OPTIONS...]
+  -------  ----------------  --------------  ---------  -------------
+     |            |                 |            |            |
+  runs Python  the tool       shape (x,y)    pressure    settings, any
+                              always 1st     always 2nd  order, all optional
+
+  Options used in the example, grouped by job:
+
+  REAL PRESSURE ............  --V <speed m/s>      (or --q <pressure Pa>)
+  RIB CORRECTION ...........  --spacing <s> --thickness <t>   (or --K <number>)
+  SECTIONS FOR FEA .........  --buckets <count> --bucket-spacing <arc|cosine|adaptive|x>
+  CHECKING AGAINST XFOIL ...  --alpha <degrees>
+  SAVING ...................  --save <folder>/<name>
+
+  What the program calculates:
+
+      pressure p = n x K x q x Cp
+                   |   |   |   |
+                   |   |   |   +-- from your .cp file
+                   |   |   +------ 1/2 x rho x V^2   (from --V, --rho)
+                   |   +---------- spacing/thickness (from --spacing/--thickness or --K)
+                   +-------------- load factor       (from --load-factor, default 1)
+
+
+----------------------------------------------------------------------------
+3. OTHER OPTIONS YOU MIGHT WANT
+----------------------------------------------------------------------------
+
+--rho 1.225          Air density in kg/m^3. 1.225 is sea level (the default).
+                     Higher altitude means lower density.
+--q 700              Give the dynamic pressure directly in Pa (replaces --V/--rho).
+--load-factor 4      Multiply everything by 4, e.g. for a 4 g pull-up.
+                     Include your safety factor here too if you like.
+--chord 0.386        Real chord length in meters, so the section table shows
+                     lengths in meters instead of fractions of chord.
+--buckets-upper 8    Use a different number of sections on the upper surface...
+--buckets-lower 4    ...and on the lower surface.
+--upper-x-edges 0.05 0.15 0.4
+                     Choose your own break points (as fractions of chord, 0 to 1).
+                     Use this to match splines you already drew.
+--lower-x-edges 0.1 0.5
+--split stagnation   Start the upper/lower sections at the stagnation point
+                     (where Cp is about 1) instead of at the geometric nose.
+--formula "K*q*Cp"   Write your own pressure formula. Names you can use:
+                     Cp q K n rho V M x y s, plus sqrt, abs, sin, cos, etc.
+--mach 0.1           Mach number; only used if your formula mentions M.
+--arrow-scale 0.3    How long the biggest arrow is, as a fraction of chord.
+--scale-mode sqrt    Shrinks the tall nose arrows so the small ones are visible.
+--arrow-every 2      Draw only every 2nd arrow (less clutter).
+--no-show            Don't pop up a window (just save files).
+--quiet              Only print warnings, errors and the tables.
+--strict             Treat any warning as a failure and save nothing.
+--help               Show the full list of options.
+
+
+----------------------------------------------------------------------------
+4. FITTING IT TO YOUR OWN WING (fill in the blanks)
+----------------------------------------------------------------------------
+
+  python3 cp_visualizer.py  ________.dat  ________.cp \
+          --V ____  --spacing ____  --thickness ____ \
+          --buckets ____  --bucket-spacing ________ \
+          --alpha ____  --load-factor ____  --save out/________
+
+  Checklist:
+  [ ] The .dat and .cp files come from the same airfoil (and ideally the
+      same XFOIL session).
+  [ ] --alpha is the angle you actually ran in XFOIL for that .cp file.
+  [ ] --V is in m/s (mph x 0.447 = m/s).
+  [ ] spacing and thickness are in the same unit.
+  [ ] End ribs (with a bay on only one side) use HALF the K value.
+  [ ] Read every [WARN] line the program prints before trusting the numbers.
+
+  Example for your 12-degree case at a 4 g pull-up:
+
+  python3 cp_visualizer.py e423.dat e423_a12.cp --V 34 --spacing 3 --thickness 0.125 \
+          --buckets 6 --bucket-spacing adaptive --alpha 12 --load-factor 4 --save out/e423_a12
+
+
+----------------------------------------------------------------------------
+5. READING WHAT IT PRINTS
+----------------------------------------------------------------------------
+
+  [ OK ]   something was checked and is fine
+  [NOTE]   information, nothing wrong
+  [WARN]   it still ran, but look at this (e.g. "flow is stalled")
+  [ERROR]  it stopped; the message says what was wrong
+
+  Sign of the pressure:
+     positive (blue arrows pointing IN)   = air pushing on the surface
+     negative (red arrows pointing OUT)   = suction pulling the surface outward
+
+  "Conservation check": compares the total force and twisting moment of the
+  averaged sections with the original smooth pressure. Small differences
+  (a few percent) mean your sections are a good stand-in for the real
+  pressure.

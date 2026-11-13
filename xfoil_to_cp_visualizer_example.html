@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XFOIL → cp_visualizer: one complete test run</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --fg: #1f2328; --muted: #59636e; --line: #d8dee4;
+    --code-bg: #f3f4f6; --accent: #1f5fa8; --warn-bg: #fff8e5; --warn-line: #e0b84c;
+    --ok-bg: #eef7ee; --ok-line: #6aa86a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #15171a; --fg: #e6e8eb; --muted: #9aa4af; --line: #30363d;
+            --code-bg: #1e2227; --accent: #6ea8ff; --warn-bg: #2a2412; --warn-line: #a3832c;
+            --ok-bg: #16241a; --ok-line: #3f7f4f; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 40px 22px 80px; }
+  h1 { font-size: 1.85rem; line-height: 1.25; margin: 0 0 6px; }
+  h2 { font-size: 1.3rem; margin: 44px 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 1.05rem; margin: 26px 0 8px; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em;
+         background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+  .block { position: relative; margin: 12px 0 18px; }
+  .block .label { font-size: 0.78rem; color: var(--muted); margin-bottom: 4px;
+                  font-family: ui-monospace, Menlo, monospace; }
+  pre { margin: 0; background: var(--code-bg); border: 1px solid var(--line); border-radius: 8px;
+        padding: 14px 16px; overflow-x: auto; font: 0.88rem/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  pre code { background: none; padding: 0; font-size: inherit; }
+  .cmt { color: var(--muted); }
+  .copy { position: absolute; top: 26px; right: 8px; font: 0.75rem -apple-system, sans-serif;
+          padding: 3px 9px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer;
+          background: var(--bg); color: var(--fg); }
+  .copy:hover { border-color: var(--accent); color: var(--accent); }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0 18px; font-size: 0.92rem; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-weight: 600; }
+  td:first-child { white-space: nowrap; }
+  .note { border-left: 4px solid var(--warn-line); background: var(--warn-bg); padding: 10px 14px;
+          border-radius: 0 6px 6px 0; margin: 14px 0; }
+  .ok { border-left: 4px solid var(--ok-line); background: var(--ok-bg); padding: 10px 14px;
+        border-radius: 0 6px 6px 0; margin: 14px 0; }
+  ol.steps { padding-left: 22px; }
+  ol.steps li { margin: 4px 0; }
+  .flow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 14px 0 6px;
+          font: 0.85rem ui-monospace, Menlo, monospace; }
+  .flow span { border: 1px solid var(--line); border-radius: 6px; padding: 5px 9px; background: var(--code-bg); }
+  .flow b { color: var(--muted); font-weight: normal; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>XFOIL → cp_visualizer: one complete test run</h1>
+<p class="sub">Example case: E423 airfoil, Re = 900,000, Mach 0.1, α = 12°, 34 m/s,
+ribs 3 in apart and 1/8 in thick. Change the numbers to fit your own case.</p>
+
+<div class="flow">
+  <span>e423.dat</span><b>→</b><span>XFOIL</span><b>→</b><span>e423_a12.cp</span><b>→</b>
+  <span>cp_visualizer.py</span><b>→</b><span>.png + .csv loads</span>
+</div>
+
+<h2>0. Before you start</h2>
+<ol class="steps">
+  <li>Put <code>e423.dat</code>, <code>cp_visualizer.py</code> and nothing else important in one folder.</li>
+  <li>Open a terminal and <code>cd</code> into that folder. XFOIL reads and writes files in the folder it was started from.</li>
+  <li>Install the Python packages once:</li>
+</ol>
+<div class="block">
+  <div class="label">terminal</div>
+  <button class="copy">Copy</button>
+<pre><code>python3 -m pip install numpy matplotlib</code></pre>
+</div>
+
+<h2>1. Run XFOIL</h2>
+
+<h3>Option A: type the commands interactively</h3>
+<p>Start XFOIL, then type each line at its prompt. A line shown as <code>(Enter)</code> means press Enter on an empty line.</p>
+<div class="block">
+  <div class="label">terminal → XFOIL prompts</div>
+  <button class="copy">Copy</button>
+<pre><code>xfoil
+LOAD e423.dat          <span class="cmt"># read the airfoil coordinates</span>
+OPER                   <span class="cmt"># enter the analysis menu</span>
+VISC 9e5               <span class="cmt"># viscous mode, Reynolds number 900,000</span>
+MACH 0.1               <span class="cmt"># Mach number (about 34 m/s at sea level)</span>
+ITER 200               <span class="cmt"># allow more iterations so the solution converges</span>
+ALFA 12                <span class="cmt"># solve at angle of attack 12 degrees</span>
+CPWR e423_a12.cp       <span class="cmt"># write x and Cp for every surface point</span>
+DUMP e423_a12.dmp      <span class="cmt"># optional: boundary layer data (Cf, shear)</span>
+(Enter)                <span class="cmt"># leave OPER</span>
+QUIT                   <span class="cmt"># exit XFOIL</span></code></pre>
+</div>
+<p>The <code>#</code> comments are for you to read here. Don't type them into XFOIL.</p>
+
+<div class="note"><strong>Check the result before moving on.</strong> After <code>ALFA 12</code>, XFOIL prints
+CL, CM and CD. Write CL down (you'll compare it with the visualizer's output). If it prints
+<code>VISCAL: Convergence failed</code>, type <code>INIT</code> and run <code>ALFA 12</code> again.</div>
+
+<h3>Option B: run the same steps from a script file</h3>
+<p>Save the block below as <code>e423_a12_xfoil.txt</code> in the same folder. This version has no comments,
+because XFOIL would try to run them as commands. The blank line before <code>QUIT</code> is required:
+it is the "Enter" that leaves the OPER menu.</p>
+<div class="block">
+  <div class="label">e423_a12_xfoil.txt</div>
+  <button class="copy">Copy</button>
+<pre><code>PLOP
+G
+
+LOAD e423.dat
+OPER
+VISC 9e5
+MACH 0.1
+ITER 200
+ALFA 12
+CPWR e423_a12.cp
+DUMP e423_a12.dmp
+
+QUIT</code></pre>
+</div>
+<p>The first three lines (<code>PLOP</code>, <code>G</code>, blank line) turn off XFOIL's plot window so the script runs
+without popping one up. Then run:</p>
+<div class="block">
+  <div class="label">terminal</div>
+  <button class="copy">Copy</button>
+<pre><code>xfoil &lt; e423_a12_xfoil.txt</code></pre>
+</div>
+<p>If a file named <code>e423_a12.cp</code> already exists, XFOIL asks whether to overwrite it, and the script
+can stall or skip the write. Delete old output files before re-running the script.</p>
+
+<div class="note"><strong>Don't use <code>PANE</code> here unless you also save the result.</strong> <code>PANE</code> re-spaces
+the airfoil points, so the <code>.cp</code> file no longer lines up point-for-point with <code>e423.dat</code>.
+The visualizer will still work (it interpolates and warns you), but for an exact match, add
+<code>SAVE e423_paneled.dat</code> right after <code>PANE</code> and give the visualizer that file instead.</div>
+
+<h2>2. Run the visualizer</h2>
+<div class="block">
+  <div class="label">terminal</div>
+  <button class="copy">Copy</button>
+<pre><code>python3 cp_visualizer.py e423.dat e423_a12.cp --V 34 --spacing 3 --thickness 0.125 \
+        --buckets 6 --bucket-spacing adaptive --alpha 12 --save out/e423_a12</code></pre>
+</div>
+
+<table>
+  <tr><th>Piece</th><th>What it does</th></tr>
+  <tr><td><code>e423.dat</code></td><td>Airfoil shape: the same file XFOIL loaded</td></tr>
+  <tr><td><code>e423_a12.cp</code></td><td>Pressure data XFOIL just wrote</td></tr>
+  <tr><td><code>--V 34</code></td><td>Airspeed in m/s, gives dynamic pressure q = ½ρV² ≈ 708 Pa</td></tr>
+  <tr><td><code>--spacing 3 --thickness 0.125</code></td><td>Rib spacing and thickness (same unit), gives K = 3 / 0.125 = 24</td></tr>
+  <tr><td><code>--buckets 6</code></td><td>Average the pressure over 6 sections per surface</td></tr>
+  <tr><td><code>--bucket-spacing adaptive</code></td><td>Short sections where pressure changes fast (the nose), long ones elsewhere</td></tr>
+  <tr><td><code>--alpha 12</code></td><td>Must equal the <code>ALFA</code> you ran in XFOIL; used to report CL for comparison</td></tr>
+  <tr><td><code>--save out/e423_a12</code></td><td>Writes the plot and two CSV files into a folder named <code>out</code></td></tr>
+  <tr><td><code>\</code></td><td>Continues the command on the next line (macOS/Linux). You can also write it on one line.</td></tr>
+</table>
+
+<p>Optional additions: <code>--load-factor 4</code> for a 4 g pull-up, <code>--chord 0.3</code> for lengths in
+meters, <code>--upper-x-edges 0.05 0.2 0.5</code> to match splines you already drew.</p>
+
+<h2>3. What you get</h2>
+<table>
+  <tr><th>File</th><th>Contents</th></tr>
+  <tr><td><code>out/e423_a12.png</code></td><td>Pressure arrows on the airfoil, the averaged sections, and Cp vs x</td></tr>
+  <tr><td><code>out/e423_a12_buckets.csv</code></td><td>One row per section: start/end points (spline break points) and average pressure in Pa and psi, ready to enter as FEA pressure loads</td></tr>
+  <tr><td><code>out/e423_a12_points.csv</code></td><td>Cp, pressure and surface normal at every point</td></tr>
+</table>
+
+<h2>4. Check that it worked</h2>
+<div class="ok">
+<ol class="steps" style="margin:0">
+  <li>The terminal shows <code>[ OK ] Point-for-point match</code>. (If it says the Cp values were interpolated instead, see the PANE note above.)</li>
+  <li>The <strong>Cl</strong> the visualizer prints is close to the CL XFOIL printed (within a few percent; the visualizer leaves out skin friction).</li>
+  <li>No <code>Trailing-edge Cp</code> warning. That warning means the flow is stalled and the loads are unreliable.</li>
+  <li>The conservation check shows small differences (a few percent). If not, add buckets or use custom edges.</li>
+</ol>
+</div>
+
+<h2>5. Run another angle</h2>
+<p>Change <code>12</code> in three places: <code>ALFA</code>, the two XFOIL output file names, and
+<code>--alpha</code> plus the file names in the visualizer command. For example, for 8°:</p>
+<div class="block">
+  <div class="label">terminal</div>
+  <button class="copy">Copy</button>
+<pre><code>python3 cp_visualizer.py e423.dat e423_a8.cp --V 34 --spacing 3 --thickness 0.125 \
+        --buckets 6 --bucket-spacing adaptive --alpha 8 --save out/e423_a8</code></pre>
+</div>
+
+</main>
+<script>
+  document.querySelectorAll(".copy").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var code = btn.parentElement.querySelector("pre").innerText;
+      // drop the "# ..." explanation comments from the interactive XFOIL block
+      code = code.split("\n").map(function (l) { return l.replace(/\s+#\s.*$/, ""); }).join("\n");
+      var done = function () { btn.textContent = "Copied"; setTimeout(function () { btn.textContent = "Copy"; }, 1400); };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(code).then(done, function () { btn.textContent = "Select & copy"; });
+      } else {
+        btn.textContent = "Select & copy";
+      }
+    });
+  });
+</script>
+</body>
+</html>
