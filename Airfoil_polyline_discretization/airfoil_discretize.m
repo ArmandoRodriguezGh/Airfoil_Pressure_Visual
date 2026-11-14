@@ -1,7 +1,16 @@
-function [seg, pbar, F] = airfoil_discretize(datfile, chord, n, spacing, units, outdir, p_fun)
+function [seg, pbar, F, inner] = airfoil_discretize(datfile, chord, n, spacing, units, outdir, p_fun, wall, nInner)
 %AIRFOIL_DISCRETIZE  Fit ONE continuous spline through an airfoil .dat file
 % (Selig or Lednicer format), split it into N arcs of controlled length, and
 % export per-segment geometry, outward normals and lengths.
+%
+% Two features are created in the same run and written to the same DXF:
+%   1. the outer outline, as N SPLINE entities (layer SEGMENTS)
+%   2. the inner wall, offset WALL (default 0.3) inward from the outline, as
+%      ONE continuous closed polyline (layer INNER)
+% so the imported profile is a shell of constant wall thickness. Where the
+% airfoil is thinner than twice the wall (near the trailing edge) the upper
+% and lower offsets meet; the inner polyline ends in a corner there and the
+% section aft of it is solid.
 %
 %   seg = airfoil_discretize('e423.dat', 25.5, 40, 'cosine', 'in', 'out');
 %
@@ -22,12 +31,20 @@ function [seg, pbar, F] = airfoil_discretize(datfile, chord, n, spacing, units, 
 %   spacing : 'cosine' (clustered at LE and TE on each surface) or 'uniform'
 %   units   : 'in' or 'mm' (DXF header setting only)
 %   outdir  : output folder
-%   p_fun   : (optional) pressure function handle, see above
+%   p_fun   : (optional) pressure function handle, see above ([] for none)
+%   wall    : wall thickness in CAD units, default 0.3 (0 = no inner wall)
+%   nInner  : number of vertices in the inner wall polyline, default 200
+%
+%   Fourth output inner is the K-by-2 list of inner wall vertices (closed:
+%   the last vertex joins back to the first).
 %
 % Outputs (in outdir):
-%   segments.csv      per-segment table (length, midpoint, normal, tangent)
-%   outline.dxf       one SPLINE entity per segment (+ TE closing line if blunt)
-%   dm_curves.txt     DesignModeler "3D Curve" coordinate file: group,id,x,y,z
+%   segments.csv        per-segment table (length, midpoint, normal, tangent)
+%   inner_polyline.csv  x, y vertices of the inner wall
+%   outline.dxf         one SPLINE entity per segment (+ TE closing line if
+%                       blunt) + one closed LWPOLYLINE for the inner wall
+%   dm_curves.txt       DesignModeler "3D Curve" coordinate file: group,id,x,y,z
+%                       (outer segments, then the inner wall as the last group)
 %   outline.png       plot for checking breakpoints and normals
 %
 % Base MATLAB only (no toolboxes). Also runs in GNU Octave.
@@ -38,11 +55,15 @@ if nargin < 4 || isempty(spacing), spacing = 'cosine'; end
 if nargin < 5 || isempty(units),   units = 'in';       end
 if nargin < 6 || isempty(outdir),  outdir = 'out';     end
 if nargin < 7, p_fun = []; end
+if nargin < 8 || isempty(wall),    wall = 0.3;         end
+if nargin < 9 || isempty(nInner),  nInner = 200;       end
 if ~exist(outdir, 'dir'), mkdir(outdir); end
 pbar = [];  F = [];
 
 if ~(chord > 0), error('chord must be a positive length.'); end
 if n < 2, error('n must be at least 2 (one segment per surface).'); end
+if wall < 0, error('wall must be positive (or 0 for no inner wall).'); end
+if wall > 0 && nInner < 8, error('nInner must be at least 8.'); end
 
 % Selig order; leading edge -> origin, chord (LE to TE along x) -> chord
 [pts, c0] = place_on_chord(read_dat(datfile), chord);
@@ -57,11 +78,17 @@ if ~isempty(p_fun)
     fprintf('net force per unit span: Fx = %.5g, Fy = %.5g\n', F(1), F(2));
 end
 
+inner = [];
+if wall > 0
+    [inner, info] = inner_wall(pp, smax, pts, wall, nInner);
+    write_inner_csv(inner, fullfile(outdir, 'inner_polyline.csv'));
+end
+
 write_csv(seg, fullfile(outdir, 'segments.csv'), pbar);
-write_dm_curves(seg, fullfile(outdir, 'dm_curves.txt'));
-write_dxf(seg, pts, fullfile(outdir, 'outline.dxf'), units);
+write_dm_curves(seg, fullfile(outdir, 'dm_curves.txt'), inner);
+write_dxf(seg, pts, fullfile(outdir, 'outline.dxf'), units, inner);
 try
-    make_plot(seg, pts, fullfile(outdir, 'outline.png'));
+    make_plot(seg, pts, fullfile(outdir, 'outline.png'), inner);
 catch err
     warning('Plot skipped: %s', err.message);
 end
@@ -74,6 +101,18 @@ L = [seg.length];
 fprintf('points read: %d  | outline arc length: %.4f\n', size(pts,1), Ltot);
 fprintf('segments: %d  | length min/max: %.4f / %.4f\n', n, min(L), max(L));
 fprintf('TE gap (first-last point): %.5f\n', norm(pts(1,:) - pts(end,:)));
+if ~isempty(inner)
+    fprintf(['inner wall: %g %s inside the outline, one closed polyline of %d ' ...
+             'vertices, length %.4f\n'], wall, units, size(inner,1), info.length);
+    fprintf(['inner wall spans x = %.4f to %.4f (solid aft of that) | thinnest ' ...
+             'wall at a vertex: %.4f\n'], info.x_le, info.x_te, info.min_gap);
+    for k = 1:size(info.mid_corners, 1)
+        fprintf(['[NOTE] the outline curves tighter than the %g wall near (%.3f, %.3f); ' ...
+                 'the inner wall has a sharp corner there instead of a rounded offset ' ...
+                 '(the wall is slightly thicker than nominal at that spot).\n'], ...
+                 wall, info.mid_corners(k,1), info.mid_corners(k,2));
+    end
+end
 end
 
 
@@ -207,6 +246,99 @@ end
 end
 
 
+%% --------------------------------------------------------- inner wall
+function d = dist_to_polyline(Q, A, B)
+% Shortest distance from each row of Q to the segments A(i,:) -> B(i,:).
+AB = B - A;
+den = max(sum(AB.^2, 2), realmin);
+d = zeros(size(Q,1), 1);
+for k = 1:size(Q,1)
+    qa = [Q(k,1) - A(:,1), Q(k,2) - A(:,2)];
+    u = min(max(sum(qa .* AB, 2) ./ den, 0), 1);
+    r = qa - [u .* AB(:,1), u .* AB(:,2)];
+    d(k) = sqrt(min(sum(r.^2, 2)));
+end
+end
+
+function c = seg_intersection(p1, p2, p3, p4)
+% Intersection point of segments p1-p2 and p3-p4, or [] if they do not cross.
+c = [];
+r = p2 - p1;  q = p4 - p3;
+den = r(1)*q(2) - r(2)*q(1);
+if abs(den) < realmin, return; end
+w = p3 - p1;
+a = (w(1)*q(2) - w(2)*q(1)) / den;
+b = (w(1)*r(2) - w(2)*r(1)) / den;
+if a >= -1e-9 && a <= 1 + 1e-9 && b >= -1e-9 && b <= 1 + 1e-9
+    c = p1 + a * r;
+end
+end
+
+function [V, info] = inner_wall(pp, smax, pts, wall, nInner)
+% Inner wall = the outline offset WALL inward, as ONE closed polyline.
+%  1. Sample the outer spline densely and step each point WALL along the
+%     inward normal (raw offset curve).
+%  2. Drop every raw point that is closer than WALL to ANY part of the
+%     outline (including the closing line of a blunt trailing edge). This
+%     removes the self-crossing loop near the trailing edge, and anywhere
+%     else the outline is too thin or too tightly curved for the wall.
+%  3. Where a stretch was dropped, join the two remaining ends at the point
+%     where the raw offset crosses itself (a sharp corner).
+%  4. Resample to nInner vertices, clustered at the inner leading edge and
+%     at the trailing-edge corner like the outer segments.
+m = 4000;
+s = linspace(0, smax, m).';
+P = ppval(pp, s).';
+T = ppval(ppder1(pp), s).';
+T = T ./ repmat(sqrt(sum(T.^2, 2)), 1, 2);
+Q = P - wall * [T(:,2), -T(:,1)];             % outward n = (ty, -tx)
+
+A = P(1:end-1, :);  B = P(2:end, :);
+if norm(pts(1,:) - pts(end,:)) > 1e-9          % blunt TE closing line
+    A = [A; P(end,:)];  B = [B; P(1,:)];
+end
+idx = find(dist_to_polyline(Q, A, B) >= wall * (1 - 1e-3));
+if numel(idx) < 10
+    error(['wall = %g is too thick for this airfoil at this chord: no inner ' ...
+           'wall is left. Reduce wall.'], wall);
+end
+
+loop = zeros(0, 2);  corners = zeros(0, 2);
+kf = idx(1);  kl = idx(end);
+if kf > 1 && kl < m                            % corner at the trailing edge
+    loop = [loop; seg_intersection(Q(kl,:), Q(kl+1,:), Q(kf-1,:), Q(kf,:))];
+end
+for k = 1:numel(idx) - 1
+    a = idx(k);  b = idx(k+1);
+    loop(end+1, :) = Q(a,:); %#ok<AGROW>
+    if b > a + 1                               % dropped stretch mid-outline
+        c = seg_intersection(Q(a,:), Q(a+1,:), Q(b-1,:), Q(b,:));
+        loop = [loop; c]; %#ok<AGROW>
+        if isempty(c), c = Q(a,:); end
+        corners(end+1, :) = c; %#ok<AGROW>
+    end
+end
+loop(end+1, :) = Q(kl,:);
+
+% resample: start vertex (TE end) -> inner LE -> back to start
+closed = [loop; loop(1,:)];
+L = [0; cumsum(sqrt(sum(diff(closed, 1, 1).^2, 2)))];
+keep = [true; diff(L) > 0];                    % interp1 needs distinct L
+L = L(keep);  closed = closed(keep, :);
+[xle, iLE] = min(closed(:,1));
+Lle = L(iLE);
+nUp = floor(nInner / 2);
+up = spaced(nUp, 'cosine') * Lle;
+lo = Lle + spaced(nInner - nUp, 'cosine') * (L(end) - Lle);
+target = [up; lo(2:end-1)];
+V = [interp1(L, closed(:,1), target), interp1(L, closed(:,2), target)];
+
+info.x_te = loop(1,1);  info.x_le = xle;  info.length = L(end);
+info.mid_corners = corners;
+info.min_gap = min(dist_to_polyline(V, A, B));
+end
+
+
 %% ----------------------------------------------------------- pressure
 function pbar = average_pressure(pp, seg, p_fun, sLE, nint)
 % p_bar_i = (1/L_i) * integral p ds over segment i (trapezoid rule).
@@ -253,19 +385,36 @@ end
 fclose(fid);
 end
 
-function write_dm_curves(seg, path)
+function write_inner_csv(inner, path)
+fid = fopen(path, 'w');
+fprintf(fid, 'i,x,y\n');
+for k = 1:size(inner, 1)
+    fprintf(fid, '%d,%.6f,%.6f\n', k - 1, inner(k,1), inner(k,2));
+end
+fclose(fid);
+end
+
+function write_dm_curves(seg, path, inner)
 % DesignModeler "3D Curve" coordinate file: Curve Group, Point ID, X, Y, Z.
-% One group per segment so each arc is its own edge.
+% One group per segment so each arc is its own edge. The inner wall is the
+% last group; its final line has point ID 0, which closes the curve.
 fid = fopen(path, 'w');
 for k = 1:numel(seg)
     for j = 1:size(seg(k).xy, 1)
         fprintf(fid, '%d\t%d\t%.8f\t%.8f\t%.8f\n', k, j, seg(k).xy(j,1), seg(k).xy(j,2), 0);
     end
 end
+if ~isempty(inner)
+    g = numel(seg) + 1;
+    for j = 1:size(inner, 1)
+        fprintf(fid, '%d\t%d\t%.8f\t%.8f\t%.8f\n', g, j, inner(j,1), inner(j,2), 0);
+    end
+    fprintf(fid, '%d\t%d\n', g, 0);
+end
 fclose(fid);
 end
 
-function write_dxf(seg, pts, path, units)
+function write_dxf(seg, pts, path, units, inner)
 % Minimal ASCII DXF (R2000) with one fit-point SPLINE per segment.
 % Hand-written: it has been checked by loading it in a DXF reader, but not
 % in Ansys. If Ansys rejects it, use dm_curves.txt instead.
@@ -300,12 +449,22 @@ if norm(pts(1,:) - pts(end,:)) > 1e-9      % blunt TE: close with a line
     ws(100, 'AcDbLine');
     w(10, pts(end,1)); w(20, pts(end,2)); w(30, 0);
     w(11, pts(1,1));   w(21, pts(1,2));   w(31, 0);
+    h = h + 1;
+end
+if ~isempty(inner)                         % inner wall: ONE closed polyline
+    ws(0, 'LWPOLYLINE'); ws(5, dec2hex(h)); ws(100, 'AcDbEntity'); ws(8, 'INNER');
+    ws(100, 'AcDbPolyline');
+    w(90, size(inner, 1));    % vertex count
+    w(70, 1);                 % closed
+    for j = 1:size(inner, 1)
+        w(10, inner(j,1)); w(20, inner(j,2));
+    end
 end
 ws(0, 'ENDSEC'); ws(0, 'EOF');
 fclose(fid);
 end
 
-function make_plot(seg, pts, path)
+function make_plot(seg, pts, path, inner)
 f = figure('Visible', 'off', 'Position', [100 100 900 320]);
 hold on;
 plot(pts(:,1), pts(:,2), 'k.', 'MarkerSize', 4);
@@ -315,8 +474,13 @@ for k = 1:numel(seg)
     plot(seg(k).xy(1,1), seg(k).xy(1,2), 'r+', 'MarkerSize', 6);
     quiver(seg(k).mid(1), seg(k).mid(2), 0.04*c*seg(k).n(1), 0.04*c*seg(k).n(2), 0, 'g');
 end
+ttl = sprintf('%d segments (red = breakpoints, green = outward normals)', numel(seg));
+if ~isempty(inner)
+    plot([inner(:,1); inner(1,1)], [inner(:,2); inner(1,2)], 'k-', 'LineWidth', 0.9);
+    ttl = sprintf('%s + inner wall polyline (%d vertices)', ttl, size(inner, 1));
+end
 axis equal;
-title(sprintf('%d segments (red = breakpoints, green = outward normals)', numel(seg)));
+title(ttl);
 print(f, path, '-dpng', '-r150');
 close(f);
 end
