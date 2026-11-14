@@ -1,0 +1,282 @@
+function [seg, pbar, F] = airfoil_discretize(datfile, chord, n, spacing, units, outdir, p_fun)
+%AIRFOIL_DISCRETIZE  Fit ONE continuous spline through an airfoil .dat file
+% (Selig or Lednicer format), split it into N arcs of controlled length, and
+% export per-segment geometry, outward normals and lengths.
+%
+%   seg = airfoil_discretize('e423.dat', 6, 40, 'cosine', 'in', 'out');
+%
+%   With a pressure model (optional 7th input) it also returns the average
+%   pressure on each segment and the net force per unit span:
+%   [seg, pbar, F] = airfoil_discretize('e423.dat', 6, 40, 'cosine', 'in', ...
+%                                       'out', @my_pressure);
+%   where  p = my_pressure(s, xy, isUpper)  receives column vector s (spline
+%   parameter), Nx2 points xy (CAD units) and logical isUpper (true on the
+%   upper surface), and returns an Nx1 pressure vector.
+%
+%   datfile : airfoil file, coordinates normalized to chord = 1
+%   chord   : chord length in CAD units (x and y are multiplied by this)
+%   n       : number of segments
+%   spacing : 'cosine' (clustered at LE and TE on each surface) or 'uniform'
+%   units   : 'in' or 'mm' (DXF header setting only)
+%   outdir  : output folder
+%   p_fun   : (optional) pressure function handle, see above
+%
+% Outputs (in outdir):
+%   segments.csv      per-segment table (length, midpoint, normal, tangent)
+%   outline.dxf       one SPLINE entity per segment (+ TE closing line if blunt)
+%   dm_curves.txt     DesignModeler "3D Curve" coordinate file: group,id,x,y,z
+%   outline.png       plot for checking breakpoints and normals
+%
+% Base MATLAB only (no toolboxes). Also runs in GNU Octave.
+
+if nargin < 2 || isempty(chord),   chord = 1;          end
+if nargin < 3 || isempty(n),       n = 40;             end
+if nargin < 4 || isempty(spacing), spacing = 'cosine'; end
+if nargin < 5 || isempty(units),   units = 'in';       end
+if nargin < 6 || isempty(outdir),  outdir = 'out';     end
+if nargin < 7, p_fun = []; end
+if ~exist(outdir, 'dir'), mkdir(outdir); end
+pbar = [];  F = [];
+
+pts = read_dat(datfile) * chord;          % Selig order, scaled by chord
+[pp, smax] = build_spline(pts);
+[sEdges, Ltot] = breakpoints(pp, smax, n, spacing);
+seg = segment_data(pp, sEdges, 25);
+
+if ~isempty(p_fun)
+    sLE  = sEdges(floor(n/2) + 1);                 % LE breakpoint
+    pbar = average_pressure(pp, seg, p_fun, sLE);
+    F    = resultant_force(seg, pbar);
+    fprintf('net force per unit span: Fx = %.5g, Fy = %.5g\n', F(1), F(2));
+end
+
+write_csv(seg, fullfile(outdir, 'segments.csv'), pbar);
+write_dm_curves(seg, fullfile(outdir, 'dm_curves.txt'));
+write_dxf(seg, pts, fullfile(outdir, 'outline.dxf'), units);
+try
+    make_plot(seg, pts, fullfile(outdir, 'outline.png'));
+catch err
+    warning('Plot skipped: %s', err.message);
+end
+
+L = [seg.length];
+fprintf('points read: %d  | outline arc length: %.4f\n', size(pts,1), Ltot);
+fprintf('segments: %d  | length min/max: %.4f / %.4f\n', n, min(L), max(L));
+fprintf('TE gap (first-last point): %.5f\n', norm(pts(1,:) - pts(end,:)));
+end
+
+
+%% ------------------------------------------------------------- reading
+function pts = read_dat(path)
+% Returns Nx2 array ordered TE(upper) -> LE -> TE(lower) (Selig order).
+fid = fopen(path, 'r');
+if fid < 0, error('Cannot open %s', path); end
+rows = zeros(0, 2);
+while true
+    ln = fgetl(fid);
+    if ~ischar(ln), break; end
+    ln = strrep(ln, ',', ' ');
+    v = sscanf(ln, '%f');          % non-numeric header lines give []
+    if numel(v) == 2 && isempty(regexp(strtrim(ln), '[A-Za-z]', 'once'))
+        rows(end+1, :) = v(:).'; %#ok<AGROW>
+    end
+end
+fclose(fid);
+pts = rows;
+
+% Lednicer: first numeric row is the point counts (e.g. "31. 31."), then
+% upper LE->TE, then lower LE->TE.
+if pts(1,1) > 1.5 && pts(1,2) > 1.5
+    nu = round(pts(1,1));  nl = round(pts(1,2));
+    upper = pts(2:1+nu, :);              % LE -> TE
+    lower = pts(2+nu:1+nu+nl, :);        % LE -> TE
+    pts = [flipud(upper); lower(2:end, :)];   % TE(up) -> LE -> TE(low)
+end
+end
+
+
+%% ------------------------------------------------------------ geometry
+function [pp, smax] = build_spline(pts)
+% One continuous cubic spline [x(s); y(s)], s = cumulative chord length.
+% (MATLAB's spline() uses not-a-knot end conditions.)
+d = sqrt(sum(diff(pts, 1, 1).^2, 2));
+s = [0; cumsum(d)];
+pp = spline(s, pts.');          % 2-by-N data -> vector-valued piecewise poly
+smax = s(end);
+end
+
+function dpp = ppder1(pp)
+% Derivative of a vector-valued pp (base MATLAB; fnder needs a toolbox).
+[b, c, l, k, dd] = unmkpp(pp);
+dc = c(:, 1:k-1) .* repmat(k-1:-1:1, size(c, 1), 1);
+dpp = mkpp(b, dc, dd);
+end
+
+function [s, L] = arclength_table(pp, smax)
+s = linspace(0, smax, 20000).';
+xy = ppval(pp, s).';
+ds = sqrt(sum(diff(xy, 1, 1).^2, 2));
+L = [0; cumsum(ds)];
+end
+
+function [sEdges, Ltot] = breakpoints(pp, smax, n, spacing)
+% n+1 breakpoints (as spline parameter values). A breakpoint is always put
+% exactly at the leading edge (min x), so no segment straddles the LE and
+% upper/lower stay separate.
+%   uniform : equal true arc length on each surface
+%   cosine  : arc-length cosine spacing on EACH surface -> smallest segments
+%             at the leading and trailing edges, where dp/ds is steepest.
+[sTab, LTab] = arclength_table(pp, smax);
+xy = ppval(pp, sTab).';
+[~, iLE] = min(xy(:,1));
+Lle = LTab(iLE);  Ltot = LTab(end);
+nUp = floor(n/2);  nLo = n - nUp;
+
+Lup = spaced(nUp, spacing) * Lle;                       % TE -> LE
+Llo = Lle + spaced(nLo, spacing) * (Ltot - Lle);        % LE -> TE
+target = [Lup; Llo(2:end)];
+sEdges = interp1(LTab, sTab, target);
+end
+
+function u = spaced(m, spacing)
+u = linspace(0, 1, m + 1).';
+if strcmp(spacing, 'cosine')
+    u = 0.5 * (1 - cos(pi * u));
+end
+end
+
+function seg = segment_data(pp, sEdges, npts)
+dpp = ppder1(pp);
+n = numel(sEdges) - 1;
+seg = struct('i', cell(1, n));
+for i = 1:n
+    s  = linspace(sEdges(i), sEdges(i+1), npts).';
+    xy = ppval(pp, s).';
+    len = sum(sqrt(sum(diff(xy, 1, 1).^2, 2)));
+    sm  = 0.5 * (sEdges(i) + sEdges(i+1));
+    mid = ppval(pp, sm).';
+    t   = ppval(dpp, sm).';
+    t   = t / norm(t);
+    % Selig order is counter-clockwise for chord along +x, so the outward
+    % normal is the tangent rotated -90 deg: (ty, -tx).
+    nv  = [t(2), -t(1)];
+    seg(i).i = i - 1;   seg(i).s0 = sEdges(i);  seg(i).s1 = sEdges(i+1);
+    seg(i).length = len;  seg(i).xy = xy;
+    seg(i).mid = mid;  seg(i).t = t;  seg(i).n = nv;
+end
+end
+
+
+%% ----------------------------------------------------------- pressure
+function pbar = average_pressure(pp, seg, p_fun, sLE, nint)
+% p_bar_i = (1/L_i) * integral p ds over segment i (trapezoid rule).
+% p_fun(s, xy, isUpper) -> pressure at those points (see header).
+if nargin < 5, nint = 200; end
+pbar = zeros(numel(seg), 1);
+for i = 1:numel(seg)
+    s  = linspace(seg(i).s0, seg(i).s1, nint).';
+    xy = ppval(pp, s).';
+    ds = sqrt(sum(diff(xy, 1, 1).^2, 2));
+    p  = p_fun(s, xy, s <= sLE);
+    p  = p(:);
+    pbar(i) = sum(0.5 * (p(2:end) + p(1:end-1)) .* ds) / sum(ds);
+end
+end
+
+function F = resultant_force(seg, pbar)
+% Force on the body per unit span from pressure acting INTO the surface,
+% n outward:  F_i = -p_i * INT(n ds).  For an arc, INT(n ds) = (dy, -dx)
+% with (dx,dy) = end - start point, so this is exact for constant pressure
+% on a curved segment (what Mechanical sees with a constant "Normal To"
+% pressure). Compare the total to your expected lift and drag.
+F = [0 0];
+for i = 1:numel(seg)
+    d = seg(i).xy(end, :) - seg(i).xy(1, :);
+    F = F - pbar(i) * [d(2), -d(1)];
+end
+end
+
+
+%% ------------------------------------------------------------- output
+function write_csv(seg, path, pbar)
+fid = fopen(path, 'w');
+hdr = 'i,s0,s1,length,x_mid,y_mid,nx,ny,tx,ty';
+if ~isempty(pbar), hdr = [hdr ',p_avg']; end
+fprintf(fid, '%s\n', hdr);
+for k = 1:numel(seg)
+    g = seg(k);
+    fprintf(fid, '%d,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f', ...
+        g.i, g.s0, g.s1, g.length, g.mid(1), g.mid(2), g.n(1), g.n(2), g.t(1), g.t(2));
+    if ~isempty(pbar), fprintf(fid, ',%.8g', pbar(k)); end
+    fprintf(fid, '\n');
+end
+fclose(fid);
+end
+
+function write_dm_curves(seg, path)
+% DesignModeler "3D Curve" coordinate file: Curve Group, Point ID, X, Y, Z.
+% One group per segment so each arc is its own edge.
+fid = fopen(path, 'w');
+for k = 1:numel(seg)
+    for j = 1:size(seg(k).xy, 1)
+        fprintf(fid, '%d\t%d\t%.8f\t%.8f\t%.8f\n', k, j, seg(k).xy(j,1), seg(k).xy(j,2), 0);
+    end
+end
+fclose(fid);
+end
+
+function write_dxf(seg, pts, path, units)
+% Minimal ASCII DXF (R2000) with one fit-point SPLINE per segment.
+% Hand-written: it has been checked by loading it in a DXF reader, but not
+% in Ansys. If Ansys rejects it, use dm_curves.txt instead.
+code = 1; if strcmp(units, 'mm'), code = 4; end
+fid = fopen(path, 'w');
+w = @(c, v) fprintf(fid, '%d\n%s\n', c, num2str(v, '%.10g'));
+ws = @(c, v) fprintf(fid, '%d\n%s\n', c, v);
+
+ws(0, 'SECTION'); ws(2, 'HEADER');
+ws(9, '$ACADVER'); ws(1, 'AC1015');
+ws(9, '$INSUNITS'); w(70, code);
+ws(0, 'ENDSEC');
+ws(0, 'SECTION'); ws(2, 'ENTITIES');
+h = 256;
+for k = 1:numel(seg)
+    xy = seg(k).xy;  nfit = size(xy, 1);
+    ws(0, 'SPLINE'); ws(5, dec2hex(h)); h = h + 1;
+    ws(100, 'AcDbEntity'); ws(8, 'SEGMENTS');
+    ws(100, 'AcDbSpline');
+    w(210, 0); w(220, 0); w(230, 1);
+    w(70, 1064);              % planar + fit-point spline
+    w(71, 3);                 % degree
+    w(72, 0); w(73, 0);       % knots, control points (none: fit-point form)
+    w(74, nfit);
+    w(42, 1e-7); w(43, 1e-7); w(44, 1e-10);
+    for j = 1:nfit
+        w(11, xy(j,1)); w(21, xy(j,2)); w(31, 0);
+    end
+end
+if norm(pts(1,:) - pts(end,:)) > 1e-9      % blunt TE: close with a line
+    ws(0, 'LINE'); ws(5, dec2hex(h)); ws(100, 'AcDbEntity'); ws(8, 'SEGMENTS');
+    ws(100, 'AcDbLine');
+    w(10, pts(end,1)); w(20, pts(end,2)); w(30, 0);
+    w(11, pts(1,1));   w(21, pts(1,2));   w(31, 0);
+end
+ws(0, 'ENDSEC'); ws(0, 'EOF');
+fclose(fid);
+end
+
+function make_plot(seg, pts, path)
+f = figure('Visible', 'off', 'Position', [100 100 900 320]);
+hold on;
+plot(pts(:,1), pts(:,2), 'k.', 'MarkerSize', 4);
+c = max(pts(:,1)) - min(pts(:,1));
+for k = 1:numel(seg)
+    plot(seg(k).xy(:,1), seg(k).xy(:,2), '-', 'LineWidth', 1.2);
+    plot(seg(k).xy(1,1), seg(k).xy(1,2), 'r+', 'MarkerSize', 6);
+    quiver(seg(k).mid(1), seg(k).mid(2), 0.04*c*seg(k).n(1), 0.04*c*seg(k).n(2), 0, 'g');
+end
+axis equal;
+title(sprintf('%d segments (red = breakpoints, green = outward normals)', numel(seg)));
+print(f, path, '-dpng', '-r150');
+close(f);
+end

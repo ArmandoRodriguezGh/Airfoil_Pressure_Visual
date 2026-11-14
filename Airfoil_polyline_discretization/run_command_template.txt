@@ -1,0 +1,1 @@
+python3 airfoil_discretize.py e423.dat --chord 6 --n 40 --spacing cosine --units in
