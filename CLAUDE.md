@@ -161,8 +161,13 @@ discretized airfoil on request (this folder). Both parts belong; do not drop eit
   `dm_curves.txt` (DesignModeler).
 - Reference command: `run_command_template.txt`. After a change, read the DXF back
   (expect 40 splines + 1 closed polyline) and look at `outline.png`.
-- The two tools are not linked yet: bucket break points from `cp_visualizer.py` are
-  not passed to the discretizer. That is the natural next step.
+- Link to Part 1: `cp_visualizer.py` writes `PREFIX_panels.csv` on these same splines
+  by default (see §6), so each DXF spline has a pressure row. The match is by
+  construction, not by reading files: **if the spline fit, LE definition, upper/lower
+  split or spacing changes here, change `spline_panels` in `cp_visualizer.py` too**,
+  then confirm panels × 25.5 equals `segments.csv` (`s0, s1, x_mid, y_mid`, normals).
+  The MATLAB version uses a not-a-knot spline, so its break points differ from the
+  Python ones by about 1e-5 in. Bucket break points are still not passed the other way.
 
 ---
 
@@ -193,16 +198,22 @@ Exit codes: `0` success, `2` input/argument error, `3` `--strict` failure (any w
 Outputs with `--save PREFIX`: `PREFIX.png`, `PREFIX_points.csv`
 (`index, surface, x, y, s, nx_out, ny_out, Cp, p_<unit>`), `PREFIX_buckets.csv`
 (`id, surface, x_start, y_start, x_end, y_end, arc_length_chords, Cp_avg, Cp_min,
-Cp_max, p_avg_<unit>[, p_avg_psi]`), and `PREFIX_panels.csv` (one row per bucket;
-relative position `s_c`, `x_c`, `y_c` at start/mid/end in chords from the LE, outward
-normal at mid, then `Cp_avg, p_avg` and the local, not averaged, `Cp`/`p` at
-start/mid/end plus `p_min, p_max`; built by `panel_rows`). The panel count follows the
-bucket flags; there is no separate panel flag. Bucket ids are `U1..Un` and `L1..Ln`, numbered
+Cp_max, p_avg_<unit>[, p_avg_psi]`), and `PREFIX_panels.csv` (relative position
+`s_c`, `x_c`, `y_c` at start/mid/end in chords, outward normal at mid, then
+`Cp_avg, p_avg` and the local, not averaged, `Cp`/`p` at start/mid/end plus
+`p_min, p_max`). **By default (`--match-splines`, on) its rows are the discretizer's
+splines**: `spline_panels` rebuilds the discretizer's natural cubic spline, LE and
+arc-length spacing with numpy only (`NaturalSpline`), so row k = `segments.csv` i = k
+= k-th SPLINE in `outline.dxf`, and position × chord = DXF coordinates. `--splines`
+(default 40) and `--spline-spacing` (default cosine) must equal the discretizer's
+`--n` and `--spacing`. `--no-match-splines` makes the rows the buckets instead
+(`panel_rows`). Bucket ids are `U1..Un` and `L1..Ln`, numbered
 from the split point toward the TE.
 
 Full CLI table: see `cp_visualizer_command_spec_for_AI.md`. Key flags: `--V --rho --q
 --K --spacing --thickness --load-factor --mach --formula --chord --alpha --buckets
 --buckets-upper --buckets-lower --bucket-spacing --upper-x-edges --lower-x-edges --split
+--match-splines --no-match-splines --splines --spline-spacing
 --arrow-scale --scale-mode --arrow-every --save --no-show --dpi --tol --strict --quiet`.
 
 Reference command:

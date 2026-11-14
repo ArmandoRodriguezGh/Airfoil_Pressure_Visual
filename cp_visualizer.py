@@ -470,6 +470,136 @@ def build_buckets(x, y, cp, p, s, isplit, n_upper, n_lower, spacing, x_edges_u, 
     return buckets
 
 
+def panel_header(dimensional):
+    unit = "Pa" if dimensional else "xq"
+    header = ["panel", "surface", "s_c_start", "s_c_mid", "s_c_end", "length_c",
+              "x_c_start", "y_c_start", "x_c_mid", "y_c_mid", "x_c_end", "y_c_end",
+              "nx_out", "ny_out",
+              "Cp_avg", f"p_avg_{unit}",
+              "Cp_start", "Cp_mid", "Cp_end",
+              f"p_start_{unit}", f"p_mid_{unit}", f"p_end_{unit}", f"p_min_{unit}", f"p_max_{unit}"]
+    return header + (["p_avg_psi", "p_mid_psi"] if dimensional else [])
+
+
+class NaturalSpline:
+    """
+    Natural cubic spline through vector data (second derivative zero at both ends).
+    Same curve as scipy's CubicSpline(t, pts, bc_type="natural"), which is what
+    Airfoil_polyline_discretization/airfoil_discretize.py fits, written with numpy only.
+    """
+
+    def __init__(self, t, pts):
+        self.t, self.y = np.asarray(t, float), np.asarray(pts, float)
+        n, h = len(self.t), np.diff(self.t)
+        A = np.zeros((n, n))
+        rhs = np.zeros_like(self.y)
+        A[0, 0] = A[-1, -1] = 1.0
+        for i in range(1, n - 1):
+            A[i, i - 1], A[i, i], A[i, i + 1] = h[i - 1], 2.0 * (h[i - 1] + h[i]), h[i]
+            rhs[i] = 6.0 * ((self.y[i + 1] - self.y[i]) / h[i] - (self.y[i] - self.y[i - 1]) / h[i - 1])
+        self.m, self.h = np.linalg.solve(A, rhs), h
+
+    def __call__(self, u, der=0):
+        u = np.atleast_1d(np.asarray(u, float))
+        i = np.clip(np.searchsorted(self.t, u, side="right") - 1, 0, len(self.t) - 2)
+        h = self.h[i][:, None]
+        a, b = (self.t[i + 1] - u)[:, None], (u - self.t[i])[:, None]
+        m0, m1 = self.m[i], self.m[i + 1]
+        c0, c1 = self.y[i] / h - m0 * h / 6.0, self.y[i + 1] / h - m1 * h / 6.0
+        if der == 0:
+            return (m0 * a ** 3 + m1 * b ** 3) / (6.0 * h) + c0 * a + c1 * b
+        return (-m0 * a ** 2 + m1 * b ** 2) / (2.0 * h) - c0 + c1
+
+
+def spline_panels(x, y, s, cp, p, n, spacing="cosine", nint=200, table=20000):
+    """
+    Panels that coincide with the n splines written by the discretizer
+    (Airfoil_polyline_discretization/airfoil_discretize.py --n N --spacing SPACING).
+
+    Same construction as the discretizer: one natural cubic spline through all airfoil
+    points, parametrised by cumulative point-to-point distance (which is this tool's s,
+    so Cp is known along it); leading edge = minimum-x point of the spline; n//2
+    segments on the upper surface and the rest on the lower, spaced in true arc length
+    on each surface: "cosine" (shortest at the leading and trailing edges) or "uniform".
+    Panel k here is segment i = k in the discretizer's segments.csv and the k-th SPLINE
+    in outline.dxf (order: upper TE -> LE -> lower TE).
+
+    Positions are relative, like the discretizer's output divided by its chord: origin
+    at the spline leading edge, lengths divided by the chord (x distance from the
+    leading edge to the trailing edge). Multiply by the discretizer --chord to get DXF
+    coordinates.
+    """
+    sp = NaturalSpline(s, np.column_stack([x, y]))
+    s_tab = np.linspace(0.0, s[-1], table)
+    xy_tab = sp(s_tab)
+    L_tab = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(xy_tab, axis=0).T))])
+
+    # leading edge: coarse minimum on the table, refined by golden-section search
+    i = int(np.argmin(xy_tab[:, 0]))
+    lo, hi = s_tab[max(i - 1, 0)], s_tab[min(i + 1, table - 1)]
+    g = 0.5 * (math.sqrt(5.0) - 1.0)
+    for _ in range(200):
+        u1, u2 = hi - g * (hi - lo), lo + g * (hi - lo)
+        if sp(u1)[0, 0] < sp(u2)[0, 0]:
+            hi = u2
+        else:
+            lo = u1
+    s_le = 0.5 * (lo + hi)
+    if sp(s_le)[0, 0] > xy_tab[i, 0]:
+        s_le = s_tab[i]
+    le = sp(s_le)[0]
+    c0 = 0.5 * (x[0] + x[-1]) - le[0]            # chord as the discretizer defines it
+
+    L_le, n_up = np.interp(s_le, s_tab, L_tab), n // 2
+    def cos_sp(k):
+        f = np.linspace(0.0, 1.0, k + 1)
+        return 0.5 * (1.0 - np.cos(np.pi * f)) if spacing == "cosine" else f
+    target = np.concatenate([cos_sp(n_up) * L_le,
+                             (L_le + cos_sp(n - n_up) * (L_tab[-1] - L_le))[1:]])
+    edges = np.interp(target, L_tab, s_tab)
+    edges[n_up] = s_le
+
+    trap = getattr(np, "trapezoid", None) or np.trapz
+    panels = []
+    for k in range(n):
+        u = np.linspace(edges[k], edges[k + 1], nint)
+        xy = sp(u)
+        ds = np.hypot(*np.diff(xy, axis=0).T)
+        arc = np.concatenate([[0.0], np.cumsum(ds)])     # true arc length along the panel
+        length = arc[-1]
+        cu, pu = np.interp(u, s, cp), np.interp(u, s, p)
+        at = np.array([edges[k], 0.5 * (edges[k] + edges[k + 1]), edges[k + 1]])
+        t = sp(at[1], 1)[0]
+        t = t / np.hypot(*t)
+        inside = (s > at[0]) & (s < at[2])
+        p3 = np.interp(at, s, p)
+        p_all = np.concatenate([p3, p[inside]])
+        panels.append(dict(
+            id=str(k), surface="upper" if k < n_up else "lower",
+            at=at / c0, length=length / c0, pos=(sp(at) - le) / c0,
+            normal=np.array([t[1], -t[0]]),              # CCW outline: outward = (ty, -tx)
+            cp_avg=trap(cu, arc) / length, p_avg=trap(pu, arc) / length,
+            cp3=np.interp(at, s, cp), p3=p3, p_min=p_all.min(), p_max=p_all.max(),
+            xx=xy[:, 0], yy=xy[:, 1], sign=1.0))
+    return panels, dict(chord=c0, le=le, n_upper=n_up)
+
+
+def spline_panel_rows(panels, dimensional):
+    """CSV rows for spline_panels(); same columns as panel_rows()."""
+    rows = []
+    for b in panels:
+        row = ([b["id"], b["surface"]]
+               + [f"{v:.6f}" for v in (*b["at"], b["length"])]
+               + [f"{v:.6f}" for k in range(3) for v in b["pos"][k]]
+               + [f"{b['normal'][0]:.6f}", f"{b['normal'][1]:.6f}",
+                  f"{b['cp_avg']:.6f}", f"{b['p_avg']:.6f}"]
+               + [f"{v:.6f}" for v in (*b["cp3"], *b["p3"], b["p_min"], b["p_max"])])
+        if dimensional:
+            row += [f"{b['p_avg'] / PA_PER_PSI:.6f}", f"{b['p3'][1] / PA_PER_PSI:.6f}"]
+        rows.append(row)
+    return panel_header(dimensional), rows
+
+
 def panel_rows(buckets, x, y, cp, p, nn, chord, dimensional):
     """
     One row per panel (= bucket, so the panel count follows --buckets and friends):
@@ -478,15 +608,7 @@ def panel_rows(buckets, x, y, cp, p, nn, chord, dimensional):
     panel start, middle and end plus the extremes inside it.
     Returns (header, rows) ready for csv.writer.
     """
-    unit = "Pa" if dimensional else "xq"
-    header = ["panel", "surface", "s_c_start", "s_c_mid", "s_c_end", "length_c",
-              "x_c_start", "y_c_start", "x_c_mid", "y_c_mid", "x_c_end", "y_c_end",
-              "nx_out", "ny_out",
-              "Cp_avg", f"p_avg_{unit}",
-              "Cp_start", "Cp_mid", "Cp_end",
-              f"p_start_{unit}", f"p_mid_{unit}", f"p_end_{unit}", f"p_min_{unit}", f"p_max_{unit}"]
-    if dimensional:
-        header += ["p_avg_psi", "p_mid_psi"]
+    header = panel_header(dimensional)
     x0, rows = x.min(), []
     for b in buckets:
         sl, idx = b["sl"], b["idx"]
@@ -678,14 +800,25 @@ def build_parser():
                    help="custom lower-surface break points as x/c")
     b.add_argument("--split", choices=("le", "stagnation"), default="le",
                    help="where upper/lower buckets start: geometric LE or the stagnation point")
+    m = ap.add_argument_group("panels file (PREFIX_panels.csv)")
+    m.add_argument("--match-splines", dest="match_splines", action="store_true", default=True,
+                   help="ON by default: the panels in PREFIX_panels.csv coincide with the splines "
+                        "written by Airfoil_polyline_discretization/airfoil_discretize.py "
+                        "(cosine spacing), one row per spline, in the same order")
+    m.add_argument("--no-match-splines", dest="match_splines", action="store_false",
+                   help="turn that off: the panels are the buckets instead (needs --buckets)")
+    m.add_argument("--splines", type=int, default=40,
+                   help="number of discretizer splines to match = its --n (default 40)")
+    m.add_argument("--spline-spacing", choices=("cosine", "uniform"), default="cosine",
+                   help="discretizer spacing to match = its --spacing (default cosine)")
     v = ap.add_argument_group("plot / output")
     v.add_argument("--arrow-scale", type=float, default=0.30,
                    help="arrow length of the largest |p| as a fraction of chord (default 0.30)")
     v.add_argument("--scale-mode", choices=("linear", "sqrt"), default="linear",
                    help="sqrt compresses a tall suction peak so small loads stay visible")
     v.add_argument("--arrow-every", type=int, default=1, help="draw every Nth arrow")
-    v.add_argument("--save", metavar="PREFIX", help="write PREFIX.png, PREFIX_points.csv and, with buckets, "
-                        "PREFIX_buckets.csv and PREFIX_panels.csv")
+    v.add_argument("--save", metavar="PREFIX", help="write PREFIX.png, PREFIX_points.csv, PREFIX_panels.csv and, "
+                        "with buckets, PREFIX_buckets.csv")
     v.add_argument("--no-show", action="store_true", help="do not open the plot window")
     v.add_argument("--dpi", type=int, default=160)
     c = ap.add_argument_group("checks")
@@ -714,6 +847,10 @@ def validate_options(o, log):
             raise InputError(f"--{name.replace('_', '-')} cannot be negative.")
     if o.arrow_every < 1:
         raise InputError("--arrow-every must be 1 or more.")
+    if o.match_splines and o.splines < 2:
+        raise InputError(f"--splines must be 2 or more (got {o.splines}); it is the number of "
+                         "splines the discretizer writes (its --n). Use --no-match-splines to "
+                         "take the panels from the buckets instead.")
     if not 0 <= o.mach < 1:
         raise InputError("--mach must be in [0, 1).")
     for name in ("upper_x_edges", "lower_x_edges"):
@@ -852,6 +989,39 @@ def run(argv=None):
         else:
             log.info("Bucketed loads reproduce the original normal force within 5% and moment within 10%.")
 
+    # --- panels matched to the discretizer's splines ---
+    spanels = []
+    if o.match_splines:
+        try:
+            spanels, sinfo = spline_panels(x, y, s, cp, p, o.splines, o.spline_spacing)
+        except (np.linalg.LinAlgError, ValueError, FloatingPointError) as exc:
+            log.error(f"Could not build the spline-matched panels: {exc}. Check the airfoil file "
+                      "for repeated points, or use --no-match-splines.")
+            return 2
+        if not sinfo["chord"] > 0 or not all(b["length"] > 0 for b in spanels):
+            log.error("Spline-matched panels came out degenerate (zero chord or zero-length panel). "
+                      "Check the airfoil file, or use --no-match-splines.")
+            return 2
+        pca, pcn, pcm = bucket_coeffs(spanels, chord, xref)
+        dcn = abs(pcn - cn) / max(abs(cn), 1e-9) * 100
+        dcm = abs(pcm - cm) / max(abs(cm), 1e-9) * 100
+        print(f"\nPanels matched to the discretizer: {len(spanels)} "
+              f"({sinfo['n_upper']} upper + {len(spanels) - sinfo['n_upper']} lower, "
+              f"{o.spline_spacing} spacing; same as airfoil_discretize.py --n {o.splines} "
+              f"--spacing {o.spline_spacing})")
+        print(f"  uniform panel loads vs the original: Cn {pcn:+.4f} ({dcn:.1f}% off), "
+              f"Cm c/4 {pcm:+.4f} ({dcm:.1f}% off)")
+        if dcn > 5 or dcm > 10:
+            log.warn(f"Spline-matched panel loads differ from the original by {dcn:.1f}% in normal "
+                     f"force and {dcm:.1f}% in pitching moment. Use more splines (--splines here and "
+                     "--n in the discretizer).")
+        if o.splines > len(x) - 1:
+            log.warn(f"--splines {o.splines} is more than the {len(x) - 1} intervals between airfoil "
+                     "points; some panels contain no data point and are filled by interpolation.")
+    elif not buckets:
+        log.note("--no-match-splines and no buckets: no panels file will be written. "
+                 "Give --buckets N to get panels from the buckets.")
+
     # --- outputs ---
     if o.strict and log.warnings:
         log.error(f"--strict: {len(log.warnings)} warning(s) treated as fatal. Nothing was written.")
@@ -879,9 +1049,11 @@ def run(argv=None):
                                     f"{b['cp_avg']:.6f}", f"{b['cp_min']:.6f}", f"{b['cp_max']:.6f}",
                                     f"{b['p_avg']:.6f}"]
                                    + ([f"{b['p_avg'] / PA_PER_PSI:.6f}"] if dimensional else []))
+            if spanels or buckets:
                 with open(o.save + "_panels.csv", "w", newline="") as fh:
                     w = csv.writer(fh)
-                    header, rows = panel_rows(buckets, x, y, cp, p, nn, chord, dimensional)
+                    header, rows = (spline_panel_rows(spanels, dimensional) if spanels else
+                                    panel_rows(buckets, x, y, cp, p, nn, chord, dimensional))
                     w.writerow(header)
                     w.writerows(rows)
         except OSError as exc:
@@ -906,7 +1078,9 @@ def run(argv=None):
     fig = make_figure(af, cp, p, nn, buckets, o, unit, bits)
     if o.save:
         fig.savefig(o.save + ".png", dpi=o.dpi)
-        wrote = [o.save + ".png", o.save + "_points.csv"] + ([o.save + "_buckets.csv", o.save + "_panels.csv"] if buckets else [])
+        wrote = ([o.save + ".png", o.save + "_points.csv"]
+                 + ([o.save + "_buckets.csv"] if buckets else [])
+                 + ([o.save + "_panels.csv"] if spanels or buckets else []))
         log.info("Wrote " + ", ".join(wrote))
     if not o.no_show:
         if matplotlib.get_backend().lower() == "agg":

@@ -65,10 +65,13 @@ alpha they are converted to Cl and Cd_pressure. Skin friction is excluded.
 | `--arrow-scale` | float, chords | 0.30 | Length of largest arrow | >0 |
 | `--scale-mode` | `linear`/`sqrt` | `linear` | Arrow length ∝ \|p\| or √\|p\| | — |
 | `--arrow-every` | int | 1 | Draw every Nth arrow | ≥1 |
-| `--save` | path prefix | none | Writes `PREFIX.png`, `PREFIX_points.csv`, and if buckets `PREFIX_buckets.csv` + `PREFIX_panels.csv` | parent dirs created |
+| `--save` | path prefix | none | Writes `PREFIX.png`, `PREFIX_points.csv`, `PREFIX_panels.csv` (unless `--no-match-splines` and no buckets), and if buckets `PREFIX_buckets.csv` | parent dirs created |
 | `--no-show` | flag | off | No GUI window (Agg backend) | — |
 | `--dpi` | int | 160 | PNG resolution | — |
 | `--tol` | float, chords | 1e-4 | Point-match tolerance between files | >0 |
+| `--match-splines` / `--no-match-splines` | flag pair | **on** | On: panels in `PREFIX_panels.csv` coincide with the discretizer's splines. Off: panels are the buckets | off + no buckets → no panels file (note printed) |
+| `--splines` | int ≥ 2 | 40 | Number of splines to match = discretizer `--n` (upper gets `n//2`) | only used when matching is on |
+| `--spline-spacing` | `cosine` \| `uniform` | `cosine` | Spacing to match = discretizer `--spacing` | only used when matching is on |
 | `--strict` | flag | off | Any warning → exit 3, nothing written | — |
 | `--quiet` | flag | off | Suppress `[ OK ]`/`[NOTE]` lines | — |
 
@@ -98,7 +101,9 @@ Result: p = 1·24·708.05·Cp ≈ 16,993·Cp Pa per node.
   check (bucketed vs original Cn and Cm, warns above 5% / 10%).
 - `PREFIX_points.csv`: `index, surface, x, y, s, nx_out, ny_out, Cp, p_<unit>`
 - `PREFIX_buckets.csv`: `id, surface, x_start, y_start, x_end, y_end, arc_length_chords, Cp_avg, Cp_min, Cp_max, p_avg_<unit>[, p_avg_psi]`
-- `PREFIX_panels.csv` (one row per bucket, so the panel count is set by `--buckets` / `--buckets-upper` / `--buckets-lower` / custom edges): `panel, surface, s_c_start, s_c_mid, s_c_end, length_c, x_c_start, y_c_start, x_c_mid, y_c_mid, x_c_end, y_c_end, nx_out, ny_out, Cp_avg, p_avg_<unit>, Cp_start, Cp_mid, Cp_end, p_start_<unit>, p_mid_<unit>, p_end_<unit>, p_min_<unit>, p_max_<unit>[, p_avg_psi, p_mid_psi]`. Positions are relative: `x_c` = (x − x_LE)/chord, `y_c` = y/chord, `s_c` = arc length from the split point in chords; `mid` is the arc-length midpoint; `nx_out, ny_out` is the unit outward normal there. `*_avg` is the arc-length average; `start/mid/end/min/max` are local, not averaged, values interpolated from the Cp file. `<unit>` is `Pa`, or `xq` in a non-dimensional run.
+- `PREFIX_panels.csv`: `panel, surface, s_c_start, s_c_mid, s_c_end, length_c, x_c_start, y_c_start, x_c_mid, y_c_mid, x_c_end, y_c_end, nx_out, ny_out, Cp_avg, p_avg_<unit>, Cp_start, Cp_mid, Cp_end, p_start_<unit>, p_mid_<unit>, p_end_<unit>, p_min_<unit>, p_max_<unit>[, p_avg_psi, p_mid_psi]`. `*_avg` is the arc-length average; `start/mid/end/min/max` are local, not averaged, values interpolated from the Cp file. `nx_out, ny_out` is the unit outward normal at mid. `<unit>` is `Pa`, or `xq` in a non-dimensional run. Two modes:
+  - **Matching on (default):** one row per discretizer spline; `panel` = 0..N−1 = `i` in the discretizer's `segments.csv` = order of SPLINE entities in `outline.dxf` (upper TE → LE → lower TE). Built from the same natural cubic spline, leading edge (spline minimum x) and arc-length spacing as `airfoil_discretize.py`. Positions are the discretizer's coordinates divided by its chord: origin at the spline LE, `s_c` = spline parameter from the upper TE, so `x_c · chord`, `y_c · chord`, `s_c · chord` equal the DXF / `segments.csv` values (`s0`, `s1`, `x_mid`, `y_mid`). `mid` is the parameter midpoint. Averages are weighted by true spline arc length. Independent of the bucket flags.
+  - **Matching off (`--no-match-splines`):** one row per bucket; `panel` = `U1..`, `L1..`; `x_c` = (x − x_min)/chord, `y_c` = y/chord, `s_c` = arc length from the split point; `mid` is the arc-length midpoint.
 - Exit codes: 0 success, 2 input/argument error, 3 `--strict` failure.
 
 ## Built-in validation the assistant can point to
