@@ -298,4 +298,7 @@ done yet).
    `e423_a28.cp`, confirm the numbers in §7 are unchanged (unless intentionally
    changed), and look at the PNG.
 5. Update the three doc files and this CLAUDE.md when flags or outputs change.
-6. Commit only when the user asks; keep commit messages descriptive.
+6. Commit and push finished, verified changes to `main` automatically, without
+   waiting to be asked (user's instruction, 2026-11-14; replaces the earlier "commit
+   only when the user asks"). Keep commit messages descriptive. Do not force-push or
+   rewrite history on `main`.
