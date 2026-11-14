@@ -1,0 +1,11 @@
+# Python packages for both tools. Install with:
+#     python3 -m pip install -r requirements.txt
+# Full instructions (virtual environment or global install): see SETUP.md
+
+# cp_visualizer.py and airfoil_discretize.py
+numpy>=1.20
+matplotlib>=3.5
+
+# airfoil_discretize.py only
+scipy>=1.7
+ezdxf>=1.0

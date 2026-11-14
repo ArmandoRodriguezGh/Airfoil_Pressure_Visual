@@ -129,7 +129,8 @@ NumPy 2 compatibility: the code uses `np.trapezoid` when available and falls bac
 | `xfoil_to_cp_visualizer_example.html` | end-to-end walkthrough: XFOIL commands → visualizer |
 | `README.md` | repo front page (user is adding images with relative paths) |
 | `Airfoil_polyline_discretization/` | Part 2 of the mission: discretized outline generator, see §5a |
-| `.gitignore` | keeps `.DS_Store` and `__pycache__` out of the repo |
+| `requirements.txt`, `SETUP.md` | packages for both Python tools and install commands (venv or global); update when a dependency changes |
+| `.gitignore` | keeps `.DS_Store`, `__pycache__` and `.venv` out of the repo |
 | `Example photos/…png` | screenshots for the README (file names contain a macOS U+202F narrow no-break space; renaming was recommended) |
 
 When the CLI changes, update **all three docs** (guide .txt, AI spec .md, HTML

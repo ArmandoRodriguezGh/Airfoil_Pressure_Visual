@@ -14,10 +14,10 @@ discretized airfoil outline, on request, that is ready to import into CAD and FE
 
 ## Quick start
 
-Install once:
+Install once (details, including a virtual environment, are in `SETUP.md`):
 
 ```bash
-python3 -m pip install numpy matplotlib scipy ezdxf
+python3 -m pip install -r requirements.txt
 ```
 
 Part 1, pressures and bucket loads (needs numpy and matplotlib only):
@@ -59,5 +59,6 @@ airfoil_discretize('e423.dat', 25.5, 40, 'cosine', 'in', 'out', [], 0.3);
 | `How to for People/command_line_guide.txt` | beginner's guide to the Part 1 command |
 | `How to for AI/visualized_command_spec_AI.md` | exact Part 1 command spec |
 | `xfoil_to_cp_visualizer_example.html` | walkthrough from XFOIL to the visualizer |
+| `SETUP.md`, `requirements.txt` | packages needed and the install commands |
 | `PRESSURE_ASSUMPTIONS.md` | every value used and assumed in turning Cp into pressure |
 | `CLAUDE.md` | project context for an AI assistant |
