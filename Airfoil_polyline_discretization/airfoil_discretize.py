@@ -24,16 +24,26 @@ airfoil is thinner than twice the wall (near the trailing edge) the upper and
 lower offsets meet; the inner polyline ends in a corner there and the section
 aft of it is solid. Use --wall 0 to skip the inner wall.
 
+A third output, outline_patran.igs, is the same geometry as curves and points
+only (no surfaces, no mesh) for Patran or any other pre-processor that reads
+IGES. In it the inner wall is cut into pieces that pair one-to-one with the
+outer splines, with a short connector line across the wall at every break
+point, so the wall is a chain of four-sided cells and every inner break point
+is a real point that internal members (trusses, webs) can be attached to.
+
 Outputs (in --out directory):
     segments.csv        per-segment: i, s0, s1, length, x_mid, y_mid, nx, ny, tx, ty
     inner_polyline.csv  x, y vertices of the inner wall (closed: last -> first)
     outline.dxf         N SPLINE entities + 1 closed LWPOLYLINE (inner wall)
+    outline_patran.igs  IGES curves + points: outer splines (level 1), inner wall
+                        pieces (level 2), wall connectors (level 3), points (level 4)
+    wall_pairs.csv      the paired outer / inner break points (truss attachment points)
     outline.png         quick plot to eyeball the discretization
 """
 import argparse
 import os
 import numpy as np
-from scipy.interpolate import CubicSpline
+from scipy.interpolate import CubicSpline, make_interp_spline
 from scipy.optimize import minimize_scalar
 
 
@@ -259,6 +269,83 @@ def inner_wall(cs, s_max, pts, wall, n_inner=200, m=4000):
     return V, info
 
 
+def wall_cells(cs, s_max, pts, wall, s_edges, m=4000, npts=25):
+    """
+    The inner wall cut so that it pairs with the outer segments.
+
+    The inner wall is the outline offset `wall` inward (see inner_wall). Here it is
+    cut at the offset of every outer break point, so inner piece k lies exactly
+    `wall` inside outer segment k and the two share the same break stations. Where
+    the offset had to be trimmed (near the trailing edge, or at a tight nose) the
+    pieces end at the trim corner instead, and those outer break points have no
+    partner.
+
+    Returns dict with
+      inner : list of dict(k = outer segment index, xy = points along the piece)
+      joins : straight lines that close a gap in the inner wall where the trimmed
+              ends do not cross (blunt trailing edge)
+      pairs : list of dict(k = break point index, outer = point, inner = point);
+              the connector across the wall at break point k runs between them
+      corners : trim corner points
+    """
+    s = np.linspace(0, s_max, m)
+
+    def offset(u):
+        u = np.atleast_1d(u)
+        T = cs(u, 1)
+        T = T / np.hypot(T[:, 0], T[:, 1])[:, None]
+        return cs(u) - wall * np.column_stack([T[:, 1], -T[:, 0]])
+
+    P, Q = cs(s), offset(s)
+    A, B = P[:-1], P[1:]
+    if np.hypot(*(pts[0] - pts[-1])) > 1e-9:
+        A, B = np.vstack([A, P[-1]]), np.vstack([B, P[0]])
+    valid = _dist_to_polyline(Q, A, B) >= wall * (1 - 1e-3)
+    idx = np.flatnonzero(valid)
+    if len(idx) < 10:
+        raise SystemExit(f"[ERROR] wall = {wall:g} is too thick for this airfoil at this "
+                         "chord: no inner wall is left. Reduce --wall.")
+
+    # runs of consecutive valid samples, each with the trim corner at its two ends
+    cut = np.flatnonzero(np.diff(idx) > 1)
+    starts = np.concatenate([[idx[0]], idx[cut + 1]])
+    ends = np.concatenate([idx[cut], [idx[-1]]])
+    runs = [dict(a=int(a), b=int(b), c0=None, c1=None) for a, b in zip(starts, ends)]
+    joins, corners = [], []
+    for j, r in enumerate(runs):
+        nxt = runs[(j + 1) % len(runs)]
+        wrap = j == len(runs) - 1
+        if wrap and (r["b"] >= m - 1 or nxt["a"] <= 0):
+            continue                                   # wall runs right up to the ends
+        c = _seg_intersection(Q[r["b"]], Q[r["b"] + 1], Q[nxt["a"] - 1], Q[nxt["a"]])
+        if c is None:
+            joins.append((Q[r["b"]], Q[nxt["a"]]))
+        else:
+            r["c1"], nxt["c0"] = c, c
+            corners.append(c)
+
+    inner, pairs = [], []
+    n = len(s_edges) - 1
+    for r in runs:
+        ua, ub = s[r["a"]], s[r["b"]]
+        for k in range(n):
+            u0, u1 = max(s_edges[k], ua), min(s_edges[k + 1], ub)
+            if u1 - u0 <= 1e-9 * s_max:
+                continue
+            xy = offset(np.linspace(u0, u1, npts))
+            if u0 == ua and r["c0"] is not None:
+                xy = np.vstack([r["c0"], xy])
+            if u1 == ub and r["c1"] is not None:
+                xy = np.vstack([xy, r["c1"]])
+            inner.append(dict(k=k, xy=xy))
+        for k in range(n + 1):
+            if ua <= s_edges[k] <= ub:
+                pairs.append(dict(k=k, outer=cs(s_edges[k]), inner=offset(s_edges[k])[0]))
+    inner.sort(key=lambda d: d["k"])
+    pairs.sort(key=lambda d: d["k"])
+    return dict(inner=inner, joins=joins, pairs=pairs, corners=corners)
+
+
 # ---------------------------------------------------------------- pressure
 def average_pressure(cs, segs, p_of_s, nint=200):
     """
@@ -331,7 +418,119 @@ def write_dxf(segs, pts_scaled, path, units="in", close_te=True, inner=None):
     doc.saveas(path)
 
 
-def plot(segs, pts_scaled, path, inner=None):
+def write_pairs_csv(cells, path):
+    with open(path, "w") as f:
+        f.write("breakpoint,x_outer,y_outer,x_inner,y_inner\n")
+        for pr in cells["pairs"]:
+            f.write(f"{pr['k']},{pr['outer'][0]:.6f},{pr['outer'][1]:.6f},"
+                    f"{pr['inner'][0]:.6f},{pr['inner'][1]:.6f}\n")
+
+
+def _iges_real(v):
+    """IGES real constant: always has a decimal point, exponent letter E."""
+    v = 0.0 if abs(v) < 1e-13 else float(v)
+    txt = f"{v:.10G}"
+    if "E" in txt:
+        mant, exp = txt.split("E")
+        return (mant if "." in mant else mant + ".") + "E" + str(int(exp))
+    return txt if "." in txt else txt + "."
+
+
+def _bspline_tokens(xy):
+    """IGES entity 126 (rational B-spline curve) parameters for a cubic through xy."""
+    xy = np.asarray(xy, float)
+    keep = np.concatenate([[True], np.hypot(*np.diff(xy, axis=0).T) > 1e-9])
+    xy = xy[keep]
+    u = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(xy, axis=0).T))])
+    deg = min(3, len(xy) - 1)
+    spl = make_interp_spline(u, xy, k=deg)
+    ctrl, knots = spl.c, spl.t
+    tok = ["126", str(len(ctrl) - 1), str(deg), "1", "0", "1", "0"]
+    tok += [_iges_real(v) for v in knots]
+    tok += ["1."] * len(ctrl)                                  # weights
+    for c in ctrl:
+        tok += [_iges_real(c[0]), _iges_real(c[1]), "0."]
+    tok += [_iges_real(u[0]), _iges_real(u[-1]), "0.", "0.", "1."]
+    return tok
+
+
+def write_iges(segs, pts_scaled, path, units="in", cells=None, name="airfoil"):
+    """
+    Curves and points only, as an IGES 5.3 file (hand-written, no extra package).
+      level 1  OUTnnnn  outer outline, one cubic B-spline per segment (+ a line that
+                        closes a blunt trailing edge)
+      level 2  INNnnnn  inner wall pieces; INN k lies under OUT k
+      level 3  CONnnnn  straight connector across the wall at break point k
+      level 4  points   every break point, outer and inner, and the trim corners
+    Entity order in the file is the segment order, so curve numbering on import
+    follows segments.csv.
+    """
+    ents = []        # (type, level, label, tokens)
+
+    def line(a, b, level, label):
+        ents.append((110, level, label, ["110"] + [_iges_real(v) for v in (a[0], a[1], 0, b[0], b[1], 0)]))
+
+    for sg in segs:
+        ents.append((126, 1, f"OUT{sg['i']:04d}", _bspline_tokens(sg["xy"])))
+    if np.hypot(*(pts_scaled[0] - pts_scaled[-1])) > 1e-9:
+        line(pts_scaled[-1], pts_scaled[0], 1, "OUTCLOSE")
+    points = [sg["xy"][0] for sg in segs] + [segs[-1]["xy"][-1]]
+    if cells is not None:
+        for d in cells["inner"]:
+            ents.append((126, 2, f"INN{d['k']:04d}", _bspline_tokens(d["xy"])))
+            points += [d["xy"][0], d["xy"][-1]]
+        for a, b in cells["joins"]:
+            line(a, b, 2, "INNCLOSE")
+        for pr in cells["pairs"]:
+            line(pr["outer"], pr["inner"], 3, f"CON{pr['k']:04d}")
+    seen = set()
+    for pt in points:
+        key = (round(float(pt[0]), 7), round(float(pt[1]), 7))
+        if key not in seen:
+            seen.add(key)
+            ents.append((116, 4, "", ["116", _iges_real(pt[0]), _iges_real(pt[1]), "0.", "0"]))
+
+    def holl(txt):
+        return f"{len(txt)}H{txt}"
+
+    def pack(tokens, width):
+        """Comma-separated tokens ending in ';', wrapped without splitting a token."""
+        lines, cur = [], ""
+        for i, tk in enumerate(tokens):
+            piece = tk + (";" if i == len(tokens) - 1 else ",")
+            if len(cur) + len(piece) > width:
+                lines.append(cur)
+                cur = ""
+            cur += piece
+        lines.append(cur)
+        return lines
+
+    unit_flag, unit_name = {"in": ("1", "IN"), "mm": ("2", "MM")}[units]
+    size = float(np.abs(pts_scaled).max())
+    fname = os.path.basename(path)
+    glob = ["1H,", "1H;", holl(name), holl(fname), holl("airfoil_discretize.py"), holl("1.0"),
+            "32", "38", "6", "308", "15", holl(name), "1.", unit_flag, holl(unit_name),
+            "1", "0.01", holl("20260101.000000"), _iges_real(1e-6), _iges_real(size),
+            holl("user"), holl("user"), "11", "0", holl("20260101.000000")]
+    S = ["Airfoil outline for Patran: curves and points only"]
+    G = pack(glob, 72)
+    D, Pm = [], []
+    for etype, level, label, tok in ents:
+        de = 2 * (len(D) // 2) + 1
+        plines = pack(tok, 64)
+        first = len(Pm) + 1
+        Pm += [f"{ln:<64} {de:>7d}" for ln in plines]
+        D.append(f"{etype:>8d}{first:>8d}{0:>8d}{0:>8d}{level:>8d}{0:>8d}{0:>8d}{0:>8d}{'00000000':>8}")
+        D.append(f"{etype:>8d}{0:>8d}{0:>8d}{len(plines):>8d}{0:>8d}{'':>8}{'':>8}{label:>8}{0:>8d}")
+    with open(path, "w", newline="\n") as f:
+        for sec, lines in (("S", S), ("G", G), ("D", D), ("P", Pm)):
+            for i, ln in enumerate(lines, 1):
+                f.write(f"{ln:<72}{sec}{i:>7d}\n")
+        f.write(f"{f'S{len(S):>7d}G{len(G):>7d}D{len(D):>7d}P{len(Pm):>7d}':<72}T{1:>7d}\n")
+    return dict(curves=sum(e[0] != 116 for e in ents), points=sum(e[0] == 116 for e in ents))
+
+
+def plot(segs, pts_scaled, path, inner=None, cells=None):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -343,6 +542,9 @@ def plot(segs, pts_scaled, path, inner=None):
         ax.arrow(*sg["mid"], *(sg["n"] * 0.03 * np.ptp(pts_scaled[:, 0])),
                  head_width=0.004 * np.ptp(pts_scaled[:, 0]), color="g")
     title = f"{len(segs)} segments (red ticks = breakpoints, green = outward normals)"
+    if cells is not None:
+        for pr in cells["pairs"]:
+            ax.plot(*np.array([pr["outer"], pr["inner"]]).T, "-", color="0.45", lw=0.6)
     if inner is not None:
         ax.plot(*np.vstack([inner, inner[:1]]).T, "k-", lw=0.9)
         title += f" + inner wall polyline ({len(inner)} vertices)"
@@ -385,14 +587,18 @@ def main():
     s_edges, Ltot = breakpoints(cs, s_max, a.n, a.spacing)
     segs = segment_data(cs, s_edges)
 
-    inner = None
+    inner = cells = None
     if a.wall > 0:
         inner, info = inner_wall(cs, s_max, pts, a.wall, a.inner_n)
         write_inner_csv(inner, os.path.join(a.out, "inner_polyline.csv"))
+        cells = wall_cells(cs, s_max, pts, a.wall, s_edges)
+        write_pairs_csv(cells, os.path.join(a.out, "wall_pairs.csv"))
 
     write_csv(segs, os.path.join(a.out, "segments.csv"))
     write_dxf(segs, pts, os.path.join(a.out, "outline.dxf"), units=a.units, inner=inner)
-    plot(segs, pts, os.path.join(a.out, "outline.png"), inner=inner)
+    iges = write_iges(segs, pts, os.path.join(a.out, "outline_patran.igs"), units=a.units,
+                      cells=cells, name=os.path.splitext(os.path.basename(a.dat))[0])
+    plot(segs, pts, os.path.join(a.out, "outline.png"), inner=inner, cells=cells)
 
     L = np.array([s["length"] for s in segs])
     le = cs(s_edges[a.n // 2])
@@ -411,6 +617,15 @@ def main():
             print(f"[NOTE] the outline curves tighter than the {a.wall:g} wall near "
                   f"({c[0]:.3f}, {c[1]:.3f}); the inner wall has a sharp corner there instead of "
                   "a rounded offset (the wall is slightly thicker than nominal at that spot).")
+    print(f"Patran file outline_patran.igs: {iges['curves']} curves and {iges['points']} points"
+          + ("" if cells is None else
+             f" ({len(segs)} outer, {len(cells['inner'])} inner wall pieces, "
+             f"{len(cells['pairs'])} connectors across the wall)"))
+    if cells is not None:
+        ks = [pr["k"] for pr in cells["pairs"]]
+        print(f"paired break points (truss attachment points on the inner wall): "
+              f"{len(ks)} of {len(s_edges)}, numbers {min(ks)} to {max(ks)}; "
+              "the rest are in the solid trailing edge")
 
 
 if __name__ == "__main__":

@@ -10,7 +10,7 @@ discretized airfoil outline, on request, that is ready to import into CAD and FE
 | Part | Tool | What it does |
 |---|---|---|
 | 1. Forces | `cp_visualizer.py` | Reads an airfoil `.dat` and an XFOIL `.cp` file (Cp vs x), turns Cp into real pressure for your airspeed and rib geometry, draws the pressure arrows, and averages the load into buckets for FEA. |
-| 2. Geometry | `Airfoil_polyline_discretization/` | Reads the same `.dat`, puts the leading edge at the origin, scales to your chord, splits the outline into N splines, and adds an inner wall as one closed polyline. Writes a DXF. Python and MATLAB versions give the same result. |
+| 2. Geometry | `Airfoil_polyline_discretization/` | Reads the same `.dat`, puts the leading edge at the origin, scales to your chord, splits the outline into N splines, and adds an inner wall as one closed polyline. Writes a DXF, and an IGES file for Patran. Python and MATLAB versions give the same result. |
 
 ## Quick start
 
@@ -53,6 +53,8 @@ airfoil_discretize('e423.dat', 25.5, 40, 'cosine', 'in', 'out', '../e423_a12.cp'
 | `out/e423_points.csv`, `out/e423_buckets.csv` | Part 1 | pressure at every point; average pressure and break points per bucket |
 | `out/e423_panels.csv` | Part 1 | one row per panel: relative position on the chord, average pressure, and the local pressure at the panel start, middle and end. By default the panels are the same 40 splines Part 2 writes to its DXF, in the same order (`--splines N` to change the count, `--no-match-splines` to use the buckets instead) |
 | `Airfoil_polyline_discretization/out/outline.dxf` | Part 2 | N splines (layer `SEGMENTS`) + inner wall as one closed polyline (layer `INNER`) |
+| `.../out/outline_patran.igs` | Part 2, Python only | the same geometry as IGES curves and points for Patran: 40 outer splines, the inner wall cut into pieces that pair with them, a connector across the wall at each break point, and a point at every break point for attaching internal members |
+| `.../out/wall_pairs.csv` | Part 2, Python only | coordinates of the paired outer / inner break points |
 | `.../out/segments.csv`, `.../out/inner_polyline.csv` | Part 2 | per-segment length, midpoint, normal; inner wall vertices |
 | `.../out/outline.png` | Part 2 | check plot of the outline, break points and inner wall |
 | `.../out/summary.png` | Part 2, MATLAB only | relative geometry (x/c, y/c, thickness, camber, inner wall) and, with a Cp file, the pressure on each segment |

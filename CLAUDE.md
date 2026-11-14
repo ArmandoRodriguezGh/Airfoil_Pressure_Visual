@@ -170,6 +170,18 @@ discretized airfoil on request (this folder). Both parts belong; do not drop eit
   with plain lines (`draw_arrow`) because `quiver` heads differ between MATLAB and
   Octave. To test in Octave on Linux: needs gnuplot, ghostscript and FreeSans fonts,
   and `graphics_toolkit('gnuplot')`.
+- **Python only:** `outline_patran.igs` (`write_iges`, hand-written IGES 5.3, no extra
+  package) for Patran: curves and points only. Level 1 `OUTnnnn` = outer segment
+  B-splines (file order = `segments.csv` order = `PREFIX_panels.csv` rows); level 2
+  `INNnnnn` = inner wall pieces from `wall_cells`, cut at the offset of each outer
+  break point so `INN k` lies under `OUT k`; level 3 `CONnnnn` = straight connector
+  (length = wall) across the wall at break point k; level 4 = points. The wall is thus
+  a chain of four-sided cells and each inner break point is a shared point for
+  internal trusses. Break points in the solid TE (0–3, 37–40 for E423) and at the
+  trimmed nose corner (21) have no partner. `wall_pairs.csv` lists the pairs.
+  Validated by importing with gmsh/OpenCASCADE (106 curves, no dangling ends, inner
+  0.3 in from outer); **not tested in Patran itself**. The MATLAB script does not
+  write this file yet.
 - Reference command: `run_command_template.txt`. After a change, read the DXF back
   (expect 40 splines + 1 closed polyline) and look at `outline.png`.
 - Link to Part 1: `cp_visualizer.py` writes `PREFIX_panels.csv` on these same splines
