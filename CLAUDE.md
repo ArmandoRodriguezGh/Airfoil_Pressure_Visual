@@ -124,14 +124,44 @@ NumPy 2 compatibility: the code uses `np.trapezoid` when available and falls bac
 | `e423_a28.cp` | XFOIL CPWR, 2 columns `x Cp`, stalled case |
 | `e423_a12.cp` | XFOIL CPWR, attached case |
 | `e423_a12.dmp` | XFOIL DUMP: `s x y Ue/Vinf Dstar Theta Cf H H* P m K` on the surface; wake rows after the TE have only 8 columns. **Not parsed by the tool yet.** |
-| `cp_visualizer_command_guide.txt` | novice explanation of the CLI |
-| `cp_visualizer_command_spec_for_AI.md` | precise CLI spec (parameter table, grammar, outputs) |
+| `How to for People/command_line_guide.txt` | novice explanation of the CLI |
+| `How to for AI/visualized_command_spec_AI.md` | precise CLI spec (parameter table, grammar, outputs) |
 | `xfoil_to_cp_visualizer_example.html` | end-to-end walkthrough: XFOIL commands → visualizer |
 | `README.md` | repo front page (user is adding images with relative paths) |
+| `Airfoil_polyline_discretization/` | Part 2 of the mission: discretized outline generator, see §5a |
+| `.gitignore` | keeps `.DS_Store` and `__pycache__` out of the repo |
 | `Example photos/…png` | screenshots for the README (file names contain a macOS U+202F narrow no-break space; renaming was recommended) |
 
 When the CLI changes, update **all three docs** (guide .txt, AI spec .md, HTML
 walkthrough) plus this file.
+
+---
+
+## 5a. The discretizer (`Airfoil_polyline_discretization/`)
+
+**Project mission (stated by the user):** (1) find the forces acting on an airfoil
+from its operating conditions (`cp_visualizer.py`), then (2) create an automatic
+discretized airfoil on request (this folder). Both parts belong; do not drop either.
+
+- `airfoil_discretize.py` (needs numpy, scipy, ezdxf, matplotlib) and
+  `airfoil_discretize.m` (base MATLAB, also runs in Octave) do the same job and must
+  be kept in step. Change one, change the other, and run both.
+- Output coordinates: the **leading edge (minimum-x point of the spline) is the
+  origin**; the outline is scaled so the chord along x from LE to TE equals `--chord`
+  (default **25.5 in**, the user's chord). No rotation, so the E423 TE sits at
+  y ≈ −0.055 in.
+- Two features per run, in one `out/outline.dxf`: the outer outline as N SPLINE
+  entities (layer `SEGMENTS`, break point exactly on the LE) and the **inner wall**,
+  offset `--wall` (default **0.3 in**) inward, as ONE closed LWPOLYLINE (layer
+  `INNER`, `--inner-n` vertices, default 200). The raw offset is trimmed wherever it
+  is closer than the wall to the outline, so it ends in a corner near the TE
+  (x ≈ 23.21 in for E423) and the section aft of that is solid.
+- Also written: `segments.csv`, `inner_polyline.csv`, `outline.png`, and from MATLAB
+  `dm_curves.txt` (DesignModeler).
+- Reference command: `run_command_template.txt`. After a change, read the DXF back
+  (expect 40 splines + 1 closed polyline) and look at `outline.png`.
+- The two tools are not linked yet: bucket break points from `cp_visualizer.py` are
+  not passed to the discretizer. That is the natural next step.
 
 ---
 
