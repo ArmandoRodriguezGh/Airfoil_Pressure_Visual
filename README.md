@@ -44,6 +44,7 @@ airfoil_discretize('e423.dat', 25.5, 40, 'cosine', 'in', 'out', [], 0.3);
 |---|---|---|
 | `out/e423.png` | Part 1 | pressure arrows, bucket-averaged load, Cp vs x |
 | `out/e423_points.csv`, `out/e423_buckets.csv` | Part 1 | pressure at every point; average pressure and break points per bucket |
+| `out/e423_panels.csv` | Part 1 | one row per panel (count set by `--buckets`): relative position on the chord, average pressure, and the local pressure at the panel start, middle and end |
 | `Airfoil_polyline_discretization/out/outline.dxf` | Part 2 | N splines (layer `SEGMENTS`) + inner wall as one closed polyline (layer `INNER`) |
 | `.../out/segments.csv`, `.../out/inner_polyline.csv` | Part 2 | per-segment length, midpoint, normal; inner wall vertices |
 | `.../out/outline.png` | Part 2 | check plot of the outline, break points and inner wall |

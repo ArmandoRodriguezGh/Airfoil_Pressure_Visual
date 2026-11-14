@@ -470,6 +470,44 @@ def build_buckets(x, y, cp, p, s, isplit, n_upper, n_lower, spacing, x_edges_u, 
     return buckets
 
 
+def panel_rows(buckets, x, y, cp, p, nn, chord, dimensional):
+    """
+    One row per panel (= bucket, so the panel count follows --buckets and friends):
+    where the panel is, relative to the leading edge and in chords, and the pressure on
+    it two ways: the arc-length AVERAGE, and the local (not averaged) values at the
+    panel start, middle and end plus the extremes inside it.
+    Returns (header, rows) ready for csv.writer.
+    """
+    unit = "Pa" if dimensional else "xq"
+    header = ["panel", "surface", "s_c_start", "s_c_mid", "s_c_end", "length_c",
+              "x_c_start", "y_c_start", "x_c_mid", "y_c_mid", "x_c_end", "y_c_end",
+              "nx_out", "ny_out",
+              "Cp_avg", f"p_avg_{unit}",
+              "Cp_start", "Cp_mid", "Cp_end",
+              f"p_start_{unit}", f"p_mid_{unit}", f"p_end_{unit}", f"p_min_{unit}", f"p_max_{unit}"]
+    if dimensional:
+        header += ["p_avg_psi", "p_mid_psi"]
+    x0, rows = x.min(), []
+    for b in buckets:
+        sl, idx = b["sl"], b["idx"]
+        at = np.array([b["sa"], 0.5 * (b["sa"] + b["sb"]), b["sb"]])
+        xs, ys = np.interp(at, sl, x[idx]), np.interp(at, sl, y[idx])
+        cps, ps = np.interp(at, sl, cp[idx]), np.interp(at, sl, p[idx])
+        inside = (sl > b["sa"]) & (sl < b["sb"])
+        p_all = np.concatenate([ps, p[idx][inside]])
+        nmid = np.array([np.interp(at[1], sl, nn[idx, 0]), np.interp(at[1], sl, nn[idx, 1])])
+        nmid = nmid / max(np.hypot(*nmid), 1e-300)
+        row = ([b["id"], b["surface"]]
+               + [f"{v / chord:.6f}" for v in (*at, b["length"])]
+               + [f"{v:.6f}" for k in range(3) for v in ((xs[k] - x0) / chord, ys[k] / chord)]
+               + [f"{nmid[0]:.6f}", f"{nmid[1]:.6f}", f"{b['cp_avg']:.6f}", f"{b['p_avg']:.6f}"]
+               + [f"{v:.6f}" for v in (*cps, *ps, p_all.min(), p_all.max())])
+        if dimensional:
+            row += [f"{b['p_avg'] / PA_PER_PSI:.6f}", f"{ps[1] / PA_PER_PSI:.6f}"]
+        rows.append(row)
+    return header, rows
+
+
 def bucket_coeffs(buckets, chord, xref, yref=0.0):
     """Force/moment coefficients when each bucket carries its uniform average Cp."""
     fx = fy = mz = 0.0
@@ -646,7 +684,8 @@ def build_parser():
     v.add_argument("--scale-mode", choices=("linear", "sqrt"), default="linear",
                    help="sqrt compresses a tall suction peak so small loads stay visible")
     v.add_argument("--arrow-every", type=int, default=1, help="draw every Nth arrow")
-    v.add_argument("--save", metavar="PREFIX", help="write PREFIX.png, PREFIX_points.csv, PREFIX_buckets.csv")
+    v.add_argument("--save", metavar="PREFIX", help="write PREFIX.png, PREFIX_points.csv and, with buckets, "
+                        "PREFIX_buckets.csv and PREFIX_panels.csv")
     v.add_argument("--no-show", action="store_true", help="do not open the plot window")
     v.add_argument("--dpi", type=int, default=160)
     c = ap.add_argument_group("checks")
@@ -840,6 +879,11 @@ def run(argv=None):
                                     f"{b['cp_avg']:.6f}", f"{b['cp_min']:.6f}", f"{b['cp_max']:.6f}",
                                     f"{b['p_avg']:.6f}"]
                                    + ([f"{b['p_avg'] / PA_PER_PSI:.6f}"] if dimensional else []))
+                with open(o.save + "_panels.csv", "w", newline="") as fh:
+                    w = csv.writer(fh)
+                    header, rows = panel_rows(buckets, x, y, cp, p, nn, chord, dimensional)
+                    w.writerow(header)
+                    w.writerows(rows)
         except OSError as exc:
             log.error(f"Could not write output files for prefix '{o.save}': {exc}")
             return 2
@@ -862,7 +906,7 @@ def run(argv=None):
     fig = make_figure(af, cp, p, nn, buckets, o, unit, bits)
     if o.save:
         fig.savefig(o.save + ".png", dpi=o.dpi)
-        wrote = [o.save + ".png", o.save + "_points.csv"] + ([o.save + "_buckets.csv"] if buckets else [])
+        wrote = [o.save + ".png", o.save + "_points.csv"] + ([o.save + "_buckets.csv", o.save + "_panels.csv"] if buckets else [])
         log.info("Wrote " + ", ".join(wrote))
     if not o.no_show:
         if matplotlib.get_backend().lower() == "agg":

@@ -65,7 +65,7 @@ alpha they are converted to Cl and Cd_pressure. Skin friction is excluded.
 | `--arrow-scale` | float, chords | 0.30 | Length of largest arrow | >0 |
 | `--scale-mode` | `linear`/`sqrt` | `linear` | Arrow length ∝ \|p\| or √\|p\| | — |
 | `--arrow-every` | int | 1 | Draw every Nth arrow | ≥1 |
-| `--save` | path prefix | none | Writes `PREFIX.png`, `PREFIX_points.csv`, `PREFIX_buckets.csv` (if buckets) | parent dirs created |
+| `--save` | path prefix | none | Writes `PREFIX.png`, `PREFIX_points.csv`, and if buckets `PREFIX_buckets.csv` + `PREFIX_panels.csv` | parent dirs created |
 | `--no-show` | flag | off | No GUI window (Agg backend) | — |
 | `--dpi` | int | 160 | PNG resolution | — |
 | `--tol` | float, chords | 1e-4 | Point-match tolerance between files | >0 |
@@ -85,7 +85,7 @@ Shell note: a trailing `\` is bash/zsh line continuation, not a tool argument
 | `--spacing 3 --thickness 0.125` | K = 24 (interior rib; end rib would be 12) |
 | `--buckets 6 --bucket-spacing adaptive` | 6 upper + 6 lower buckets, short where dCp/ds is large |
 | `--alpha 23` | Cl, Cd_p reported for α = 23° |
-| `--save out/e423` | out/e423.png, out/e423_points.csv, out/e423_buckets.csv |
+| `--save out/e423` | out/e423.png, out/e423_points.csv, out/e423_buckets.csv, out/e423_panels.csv |
 | implied defaults | rho 1.225, n 1, formula `n*K*q*Cp`, split `le`, arrow-scale 0.30, linear |
 
 Result: p = 1·24·708.05·Cp ≈ 16,993·Cp Pa per node.
@@ -98,6 +98,7 @@ Result: p = 1·24·708.05·Cp ≈ 16,993·Cp Pa per node.
   check (bucketed vs original Cn and Cm, warns above 5% / 10%).
 - `PREFIX_points.csv`: `index, surface, x, y, s, nx_out, ny_out, Cp, p_<unit>`
 - `PREFIX_buckets.csv`: `id, surface, x_start, y_start, x_end, y_end, arc_length_chords, Cp_avg, Cp_min, Cp_max, p_avg_<unit>[, p_avg_psi]`
+- `PREFIX_panels.csv` (one row per bucket, so the panel count is set by `--buckets` / `--buckets-upper` / `--buckets-lower` / custom edges): `panel, surface, s_c_start, s_c_mid, s_c_end, length_c, x_c_start, y_c_start, x_c_mid, y_c_mid, x_c_end, y_c_end, nx_out, ny_out, Cp_avg, p_avg_<unit>, Cp_start, Cp_mid, Cp_end, p_start_<unit>, p_mid_<unit>, p_end_<unit>, p_min_<unit>, p_max_<unit>[, p_avg_psi, p_mid_psi]`. Positions are relative: `x_c` = (x − x_LE)/chord, `y_c` = y/chord, `s_c` = arc length from the split point in chords; `mid` is the arc-length midpoint; `nx_out, ny_out` is the unit outward normal there. `*_avg` is the arc-length average; `start/mid/end/min/max` are local, not averaged, values interpolated from the Cp file. `<unit>` is `Pa`, or `xq` in a non-dimensional run.
 - Exit codes: 0 success, 2 input/argument error, 3 `--strict` failure.
 
 ## Built-in validation the assistant can point to

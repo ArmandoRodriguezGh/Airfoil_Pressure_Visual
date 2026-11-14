@@ -92,6 +92,14 @@ e423_a28.cp
         out/e423.png           the picture
         out/e423_points.csv    pressure at every surface point
         out/e423_buckets.csv   the averaged section table (for your FEA)
+        out/e423_panels.csv    one row per section (panel): where it is on the
+                               airfoil (as fractions of the chord, measured
+                               from the leading edge) and the pressure on it
+                               two ways: the AVERAGE over the panel, and the
+                               actual, not averaged, pressure at the panel's
+                               start, middle and end plus the lowest and
+                               highest value inside it. The number of panels
+                               is whatever you asked for with --buckets.
 
 The backslash ( \ ) at the end of the first line
     Not an option. It just tells the terminal "the command continues on the

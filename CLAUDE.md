@@ -48,7 +48,7 @@ e423.dat ──► XFOIL (VISC, ALFA, CPWR, DUMP) ──► e423_aXX.cp (+ .dmp)
                          cp_visualizer.py ◄────────┘
                                 │
           ┌─────────────────────┼──────────────────────────┐
-     plot (.png)        points CSV                  buckets CSV
+     plot (.png)        points CSV             buckets CSV + panels CSV
                                                        │
             Fusion: rib profile drawn as 10–15 splines, extruded to 1/8 in,
             one uniform pressure per edge face = bucket p_avg
@@ -192,7 +192,11 @@ Exit codes: `0` success, `2` input/argument error, `3` `--strict` failure (any w
 Outputs with `--save PREFIX`: `PREFIX.png`, `PREFIX_points.csv`
 (`index, surface, x, y, s, nx_out, ny_out, Cp, p_<unit>`), `PREFIX_buckets.csv`
 (`id, surface, x_start, y_start, x_end, y_end, arc_length_chords, Cp_avg, Cp_min,
-Cp_max, p_avg_<unit>[, p_avg_psi]`). Bucket ids are `U1..Un` and `L1..Ln`, numbered
+Cp_max, p_avg_<unit>[, p_avg_psi]`), and `PREFIX_panels.csv` (one row per bucket;
+relative position `s_c`, `x_c`, `y_c` at start/mid/end in chords from the LE, outward
+normal at mid, then `Cp_avg, p_avg` and the local, not averaged, `Cp`/`p` at
+start/mid/end plus `p_min, p_max`; built by `panel_rows`). The panel count follows the
+bucket flags; there is no separate panel flag. Bucket ids are `U1..Un` and `L1..Ln`, numbered
 from the split point toward the TE.
 
 Full CLI table: see `cp_visualizer_command_spec_for_AI.md`. Key flags: `--V --rho --q
