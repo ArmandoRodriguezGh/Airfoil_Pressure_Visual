@@ -7,8 +7,13 @@ export per-segment geometry (points, tangents, outward normals, lengths)
 plus a DXF with each arc as its own SPLINE entity.
 
 Usage:
-    python3 airfoil_discretize.py e423.dat --chord 6.0 --n 40 --spacing cosine
-    (chord in whatever units you want the CAD in, e.g. inches)
+    python3 airfoil_discretize.py e423.dat --chord 25.5 --n 40 --spacing cosine
+    (chord in whatever units you want the CAD in, e.g. inches; default 25.5)
+
+Output coordinates: the leading edge (the minimum-x point of the spline) is
+the origin (0, 0), and the outline is scaled so the chord, measured along x
+from the leading edge to the trailing edge, equals --chord. The input file
+does not have to be normalized to chord = 1 or start at x = 0.
 
 Outputs (in --out directory):
     segments.csv   per-segment: i, s0, s1, length, x_mid, y_mid, nx, ny, tx, ty
@@ -19,6 +24,7 @@ import argparse
 import os
 import numpy as np
 from scipy.interpolate import CubicSpline
+from scipy.optimize import minimize_scalar
 
 
 # ----------------------------------------------------------------- reading
@@ -70,6 +76,38 @@ def arclength_table(cs, s_max, m=20000):
     return s, L
 
 
+def find_le(cs, s_max, s_tab=None):
+    """
+    Spline parameter of the leading edge = the minimum-x point of the spline
+    (not just the nearest data point): coarse search on a dense table, then
+    a bounded 1-D minimisation between the neighbouring table points.
+    """
+    if s_tab is None:
+        s_tab = np.linspace(0, s_max, 20000)
+    i = int(np.argmin(cs(s_tab)[:, 0]))
+    lo, hi = s_tab[max(i - 1, 0)], s_tab[min(i + 1, len(s_tab) - 1)]
+    res = minimize_scalar(lambda s: cs(s)[0], bounds=(lo, hi), method="bounded",
+                          options={"xatol": 1e-13 * max(s_max, 1.0)})
+    return float(res.x) if cs(res.x)[0] <= cs(s_tab[i])[0] else float(s_tab[i])
+
+
+def place_on_chord(pts, chord):
+    """
+    Move the leading edge to the origin and scale uniformly so the chord
+    (x distance from the leading edge to the trailing edge) equals `chord`.
+    The trailing edge is the midpoint of the first and last points, so a
+    blunt trailing edge is handled too. No rotation is applied.
+    """
+    cs, s_max = build_spline(pts)
+    le = cs(find_le(cs, s_max))
+    te = 0.5 * (pts[0] + pts[-1])
+    c0 = te[0] - le[0]
+    if not c0 > 0:
+        raise SystemExit("[ERROR] trailing edge is not downstream (+x) of the leading "
+                         "edge; the file must run TE -> upper -> LE -> lower -> TE.")
+    return (pts - le) * (chord / c0), c0
+
+
 def breakpoints(cs, s_max, n, spacing="cosine"):
     """
     n+1 breakpoints along the single spline, returned as parameter values.
@@ -81,9 +119,8 @@ def breakpoints(cs, s_max, n, spacing="cosine"):
               pressure gradients are steepest.
     """
     s_tab, L_tab = arclength_table(cs, s_max)
-    xy = cs(s_tab)
-    i_le = int(np.argmin(xy[:, 0]))
-    L_le, Ltot = L_tab[i_le], L_tab[-1]
+    s_le = find_le(cs, s_max, s_tab)
+    L_le, Ltot = np.interp(s_le, s_tab, L_tab), L_tab[-1]
     n_up = n // 2
     n_lo = n - n_up
 
@@ -95,7 +132,9 @@ def breakpoints(cs, s_max, n, spacing="cosine"):
     L_up = spaced(n_up) * L_le
     L_lo = L_le + spaced(n_lo) * (Ltot - L_le)
     target = np.concatenate([L_up, L_lo[1:]])
-    return np.interp(target, L_tab, s_tab), Ltot
+    s_edges = np.interp(target, L_tab, s_tab)
+    s_edges[n_up] = s_le                 # breakpoint exactly on the leading edge
+    return s_edges, Ltot
 
 
 def segment_data(cs, s_edges, npts=25):
@@ -200,7 +239,8 @@ def plot(segs, pts_scaled, path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("dat")
-    ap.add_argument("--chord", type=float, default=1.0, help="chord length in CAD units")
+    ap.add_argument("--chord", type=float, default=25.5,
+                    help="chord length (LE to TE) in CAD units; default 25.5")
     ap.add_argument("--n", type=int, default=40, help="number of segments")
     ap.add_argument("--spacing", choices=["uniform", "cosine"], default="cosine")
     ap.add_argument("--units", choices=["in", "mm"], default="in")
@@ -208,7 +248,13 @@ def main():
     a = ap.parse_args()
     os.makedirs(a.out, exist_ok=True)
 
-    pts = read_dat(a.dat) * a.chord          # scale normalized coords by chord
+    if not a.chord > 0:
+        raise SystemExit("[ERROR] --chord must be a positive length.")
+    if a.n < 2:
+        raise SystemExit("[ERROR] --n must be at least 2 (one segment per surface).")
+
+    # leading edge -> origin, chord (LE to TE along x) -> a.chord
+    pts, c0 = place_on_chord(read_dat(a.dat), a.chord)
     cs, s_max = build_spline(pts)
     s_edges, Ltot = breakpoints(cs, s_max, a.n, a.spacing)
     segs = segment_data(cs, s_edges)
@@ -218,6 +264,10 @@ def main():
     plot(segs, pts, os.path.join(a.out, "outline.png"))
 
     L = np.array([s["length"] for s in segs])
+    le = cs(s_edges[a.n // 2])
+    te = 0.5 * (pts[0] + pts[-1])
+    print(f"input chord: {c0:.5f}  -> scaled by {a.chord / c0:.5f} to chord {a.chord:g} {a.units}")
+    print(f"LE at ({le[0]:.6f}, {le[1]:.6f})  | TE at ({te[0]:.6f}, {te[1]:.6f})")
     print(f"points read: {len(pts)}  | outline arc length: {Ltot:.4f}")
     print(f"segments: {a.n}  | length min/max: {L.min():.4f} / {L.max():.4f}")
     print(f"TE gap (first-last point): {np.hypot(*(pts[0]-pts[-1])):.5f}")

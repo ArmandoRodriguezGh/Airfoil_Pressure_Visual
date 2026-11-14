@@ -3,18 +3,21 @@ function [seg, pbar, F] = airfoil_discretize(datfile, chord, n, spacing, units, 
 % (Selig or Lednicer format), split it into N arcs of controlled length, and
 % export per-segment geometry, outward normals and lengths.
 %
-%   seg = airfoil_discretize('e423.dat', 6, 40, 'cosine', 'in', 'out');
+%   seg = airfoil_discretize('e423.dat', 25.5, 40, 'cosine', 'in', 'out');
 %
 %   With a pressure model (optional 7th input) it also returns the average
 %   pressure on each segment and the net force per unit span:
-%   [seg, pbar, F] = airfoil_discretize('e423.dat', 6, 40, 'cosine', 'in', ...
+%   [seg, pbar, F] = airfoil_discretize('e423.dat', 25.5, 40, 'cosine', 'in', ...
 %                                       'out', @my_pressure);
 %   where  p = my_pressure(s, xy, isUpper)  receives column vector s (spline
 %   parameter), Nx2 points xy (CAD units) and logical isUpper (true on the
 %   upper surface), and returns an Nx1 pressure vector.
 %
-%   datfile : airfoil file, coordinates normalized to chord = 1
-%   chord   : chord length in CAD units (x and y are multiplied by this)
+%   datfile : airfoil file (does not have to be normalized or start at x = 0)
+%   chord   : chord length in CAD units, default 25.5. The leading edge
+%             (minimum-x point of the spline) is moved to the origin (0, 0)
+%             and the outline is scaled so the chord, measured along x from
+%             the leading edge to the trailing edge, equals this value.
 %   n       : number of segments
 %   spacing : 'cosine' (clustered at LE and TE on each surface) or 'uniform'
 %   units   : 'in' or 'mm' (DXF header setting only)
@@ -29,7 +32,7 @@ function [seg, pbar, F] = airfoil_discretize(datfile, chord, n, spacing, units, 
 %
 % Base MATLAB only (no toolboxes). Also runs in GNU Octave.
 
-if nargin < 2 || isempty(chord),   chord = 1;          end
+if nargin < 2 || isempty(chord),   chord = 25.5;       end
 if nargin < 3 || isempty(n),       n = 40;             end
 if nargin < 4 || isempty(spacing), spacing = 'cosine'; end
 if nargin < 5 || isempty(units),   units = 'in';       end
@@ -38,7 +41,11 @@ if nargin < 7, p_fun = []; end
 if ~exist(outdir, 'dir'), mkdir(outdir); end
 pbar = [];  F = [];
 
-pts = read_dat(datfile) * chord;          % Selig order, scaled by chord
+if ~(chord > 0), error('chord must be a positive length.'); end
+if n < 2, error('n must be at least 2 (one segment per surface).'); end
+
+% Selig order; leading edge -> origin, chord (LE to TE along x) -> chord
+[pts, c0] = place_on_chord(read_dat(datfile), chord);
 [pp, smax] = build_spline(pts);
 [sEdges, Ltot] = breakpoints(pp, smax, n, spacing);
 seg = segment_data(pp, sEdges, 25);
@@ -59,6 +66,10 @@ catch err
     warning('Plot skipped: %s', err.message);
 end
 
+le = seg(floor(n/2) + 1).xy(1, :);
+te = 0.5 * (pts(1,:) + pts(end,:));
+fprintf('input chord: %.5f  -> scaled by %.5f to chord %g %s\n', c0, chord / c0, chord, units);
+fprintf('LE at (%.6f, %.6f)  | TE at (%.6f, %.6f)\n', le(1), le(2), te(1), te(2));
 L = [seg.length];
 fprintf('points read: %d  | outline arc length: %.4f\n', size(pts,1), Ltot);
 fprintf('segments: %d  | length min/max: %.4f / %.4f\n', n, min(L), max(L));
@@ -119,6 +130,35 @@ ds = sqrt(sum(diff(xy, 1, 1).^2, 2));
 L = [0; cumsum(ds)];
 end
 
+function sLE = find_le(pp, sTab)
+% Spline parameter of the leading edge = minimum-x point of the spline (not
+% just the nearest data point): coarse search on the dense table, then a
+% bounded 1-D minimisation between the neighbouring table points.
+xy = ppval(pp, sTab).';
+[xmin, i] = min(xy(:,1));
+lo = sTab(max(i-1, 1));  hi = sTab(min(i+1, numel(sTab)));
+xfun = @(s) [1 0] * ppval(pp, s);
+sLE = fminbnd(xfun, lo, hi, optimset('TolX', 1e-13 * max(sTab(end), 1)));
+if xfun(sLE) > xmin, sLE = sTab(i); end
+end
+
+function [pts, c0] = place_on_chord(pts, chord)
+% Move the leading edge to the origin and scale uniformly so the chord (x
+% distance from the leading edge to the trailing edge) equals chord. The
+% trailing edge is the midpoint of the first and last points, so a blunt
+% trailing edge is handled too. No rotation is applied.
+[pp, smax] = build_spline(pts);
+sTab = arclength_table(pp, smax);
+le = ppval(pp, find_le(pp, sTab)).';
+te = 0.5 * (pts(1,:) + pts(end,:));
+c0 = te(1) - le(1);
+if ~(c0 > 0)
+    error(['Trailing edge is not downstream (+x) of the leading edge; ' ...
+           'the file must run TE -> upper -> LE -> lower -> TE.']);
+end
+pts = (pts - repmat(le, size(pts,1), 1)) * (chord / c0);
+end
+
 function [sEdges, Ltot] = breakpoints(pp, smax, n, spacing)
 % n+1 breakpoints (as spline parameter values). A breakpoint is always put
 % exactly at the leading edge (min x), so no segment straddles the LE and
@@ -127,15 +167,15 @@ function [sEdges, Ltot] = breakpoints(pp, smax, n, spacing)
 %   cosine  : arc-length cosine spacing on EACH surface -> smallest segments
 %             at the leading and trailing edges, where dp/ds is steepest.
 [sTab, LTab] = arclength_table(pp, smax);
-xy = ppval(pp, sTab).';
-[~, iLE] = min(xy(:,1));
-Lle = LTab(iLE);  Ltot = LTab(end);
+sLE = find_le(pp, sTab);
+Lle = interp1(sTab, LTab, sLE);  Ltot = LTab(end);
 nUp = floor(n/2);  nLo = n - nUp;
 
 Lup = spaced(nUp, spacing) * Lle;                       % TE -> LE
 Llo = Lle + spaced(nLo, spacing) * (Ltot - Lle);        % LE -> TE
 target = [Lup; Llo(2:end)];
 sEdges = interp1(LTab, sTab, target);
+sEdges(nUp + 1) = sLE;              % breakpoint exactly on the leading edge
 end
 
 function u = spaced(m, spacing)
