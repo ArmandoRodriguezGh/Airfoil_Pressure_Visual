@@ -159,6 +159,17 @@ discretized airfoil on request (this folder). Both parts belong; do not drop eit
   (x ≈ 23.21 in for E423) and the section aft of that is solid.
 - Also written: `segments.csv`, `inner_polyline.csv`, `outline.png`, and from MATLAB
   `dm_curves.txt` (DesignModeler).
+- **MATLAB only:** `summary.png` (`make_summary`), a graph of the relative geometry
+  (x/c, y/c: outline, break points, inner wall, camber line, max thickness) and, when
+  pressure is given, the average pressure per segment as arrows plus local vs average
+  pressure along the chord. Pressure comes from the 7th input: an XFOIL Cp file name
+  (`read_cp`, with `pscale` = n·K·q as the 10th input, default 1 = plain Cp) or a
+  function handle. Sign convention as §3. Its segment averages equal the visualizer's
+  spline-matched `PREFIX_panels.csv` (checked: within 0.01 Pa, Cn = 2.0152). The Python
+  discretizer does not read Cp; `cp_visualizer.py` covers that side. Arrows are drawn
+  with plain lines (`draw_arrow`) because `quiver` heads differ between MATLAB and
+  Octave. To test in Octave on Linux: needs gnuplot, ghostscript and FreeSans fonts,
+  and `graphics_toolkit('gnuplot')`.
 - Reference command: `run_command_template.txt`. After a change, read the DXF back
   (expect 40 splines + 1 closed polyline) and look at `outline.png`.
 - Link to Part 1: `cp_visualizer.py` writes `PREFIX_panels.csv` on these same splines

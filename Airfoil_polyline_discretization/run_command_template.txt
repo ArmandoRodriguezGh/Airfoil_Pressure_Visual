@@ -1,1 +1,8 @@
+Python (Terminal, from this folder):
 python3 airfoil_discretize.py e423.dat --chord 25.5 --wall 0.3 --n 40 --spacing cosine --units in
+
+MATLAB or Octave (from this folder), geometry only:
+airfoil_discretize('e423.dat', 25.5, 40, 'cosine', 'in', 'out', [], 0.3);
+
+MATLAB or Octave, with the pressure graph (Cp file, then p = 16993.2 * Cp in Pa):
+airfoil_discretize('e423.dat', 25.5, 40, 'cosine', 'in', 'out', '../e423_a12.cp', 0.3, 200, 16993.2);

@@ -1,4 +1,4 @@
-function [seg, pbar, F, inner] = airfoil_discretize(datfile, chord, n, spacing, units, outdir, p_fun, wall, nInner)
+function [seg, pbar, F, inner] = airfoil_discretize(datfile, chord, n, spacing, units, outdir, p_fun, wall, nInner, pscale)
 %AIRFOIL_DISCRETIZE  Fit ONE continuous spline through an airfoil .dat file
 % (Selig or Lednicer format), split it into N arcs of controlled length, and
 % export per-segment geometry, outward normals and lengths.
@@ -14,8 +14,16 @@ function [seg, pbar, F, inner] = airfoil_discretize(datfile, chord, n, spacing, 
 %
 %   seg = airfoil_discretize('e423.dat', 25.5, 40, 'cosine', 'in', 'out');
 %
-%   With a pressure model (optional 7th input) it also returns the average
-%   pressure on each segment and the net force per unit span:
+%   With pressure data it also graphs the pressure on every segment. The
+%   easiest way is to give the XFOIL Cp file (CPWR output) as the 7th input
+%   and the Cp-to-pressure multiplier n*K*q as the 10th:
+%   airfoil_discretize('e423.dat', 25.5, 40, 'cosine', 'in', 'out', ...
+%                      '../e423_a12.cp', 0.3, 200, 16993.2);
+%   (16993.2 Pa = K * q = 24 * 0.5 * 1.225 * 34^2; leave it out to get the
+%   pressures as plain Cp.)
+%
+%   The 7th input can instead be your own pressure model. Either way the
+%   average pressure on each segment and the net force are returned:
 %   [seg, pbar, F] = airfoil_discretize('e423.dat', 25.5, 40, 'cosine', 'in', ...
 %                                       'out', @my_pressure);
 %   where  p = my_pressure(s, xy, isUpper)  receives column vector s (spline
@@ -31,9 +39,14 @@ function [seg, pbar, F, inner] = airfoil_discretize(datfile, chord, n, spacing, 
 %   spacing : 'cosine' (clustered at LE and TE on each surface) or 'uniform'
 %   units   : 'in' or 'mm' (DXF header setting only)
 %   outdir  : output folder
-%   p_fun   : (optional) pressure function handle, see above ([] for none)
+%   p_fun   : (optional) pressure input: an XFOIL Cp file name ('x Cp' or
+%             'x y Cp' rows, same airfoil), or a function handle as above,
+%             or [] for none
 %   wall    : wall thickness in CAD units, default 0.3 (0 = no inner wall)
 %   nInner  : number of vertices in the inner wall polyline, default 200
+%   pscale  : used with a Cp file only: pressure = pscale * Cp. Give n*K*q
+%             in Pa (load factor * rib spacing/thickness * 0.5*rho*V^2).
+%             Default 1, which leaves the pressures as Cp.
 %
 %   Fourth output inner is the K-by-2 list of inner wall vertices (closed:
 %   the last vertex joins back to the first).
@@ -46,6 +59,11 @@ function [seg, pbar, F, inner] = airfoil_discretize(datfile, chord, n, spacing, 
 %   dm_curves.txt       DesignModeler "3D Curve" coordinate file: group,id,x,y,z
 %                       (outer segments, then the inner wall as the last group)
 %   outline.png       plot for checking breakpoints and normals
+%   summary.png       graph of the relative geometry (x/c, y/c: outline,
+%                     break points, inner wall, thickness and camber) and,
+%                     when pressure is given, the pressure on the segments
+%                     (arrows on the airfoil, and average vs local values
+%                     along the chord)
 %
 % Base MATLAB only (no toolboxes). Also runs in GNU Octave.
 
@@ -57,6 +75,7 @@ if nargin < 6 || isempty(outdir),  outdir = 'out';     end
 if nargin < 7, p_fun = []; end
 if nargin < 8 || isempty(wall),    wall = 0.3;         end
 if nargin < 9 || isempty(nInner),  nInner = 200;       end
+if nargin < 10 || isempty(pscale), pscale = 1;         end
 if ~exist(outdir, 'dir'), mkdir(outdir); end
 pbar = [];  F = [];
 
@@ -70,12 +89,33 @@ if wall > 0 && nInner < 8, error('nInner must be at least 8.'); end
 [pp, smax] = build_spline(pts);
 [sEdges, Ltot] = breakpoints(pp, smax, n, spacing);
 seg = segment_data(pp, sEdges, 25);
+sLE = sEdges(floor(n/2) + 1);                      % LE breakpoint
 
+punit = '';  ploc = {};
+if ischar(p_fun)                                   % XFOIL Cp file
+    if ~(pscale > 0), error('pscale must be a positive number.'); end
+    sNodes = [0; cumsum(sqrt(sum(diff(pts, 1, 1).^2, 2)))];
+    cpNodes = read_cp(p_fun, pts, chord);
+    p_fun = @(s, xy, isUpper) pscale * interp1(sNodes, cpNodes, s);
+    if pscale == 1, punit = 'Cp'; else, punit = 'Pa'; end
+    fprintf('pressure from %d Cp values, p = %g * Cp\n', numel(cpNodes), pscale);
+elseif ~isempty(p_fun)
+    punit = 'pressure';
+end
 if ~isempty(p_fun)
-    sLE  = sEdges(floor(n/2) + 1);                 % LE breakpoint
     pbar = average_pressure(pp, seg, p_fun, sLE);
     F    = resultant_force(seg, pbar);
-    fprintf('net force per unit span: Fx = %.5g, Fy = %.5g\n', F(1), F(2));
+    fprintf('net force per unit span: Fx = %.5g, Fy = %.5g  (pressure x %s)\n', F(1), F(2), units);
+    if ~strcmp(punit, 'pressure')
+        fprintf(['force coefficients from the segment averages: Cn = %+.4f, Ca = %+.4f ' ...
+                 '(compare with XFOIL / cp_visualizer)\n'], F(2)/(pscale*chord), F(1)/(pscale*chord));
+    end
+    ploc = cell(1, n);                             % local (not averaged) pressure
+    for k = 1:n
+        sk = linspace(seg(k).s0, seg(k).s1, size(seg(k).xy, 1)).';
+        pk = p_fun(sk, seg(k).xy, sk <= sLE);
+        ploc{k} = pk(:);
+    end
 end
 
 inner = [];
@@ -91,6 +131,11 @@ try
     make_plot(seg, pts, fullfile(outdir, 'outline.png'), inner);
 catch err
     warning('Plot skipped: %s', err.message);
+end
+try
+    make_summary(seg, inner, chord, units, wall, pbar, ploc, punit, fullfile(outdir, 'summary.png'));
+catch err
+    warning('Summary graph skipped: %s', err.message);
 end
 
 le = seg(floor(n/2) + 1).xy(1, :);
@@ -141,6 +186,57 @@ if pts(1,1) > 1.5 && pts(1,2) > 1.5
     upper = pts(2:1+nu, :);              % LE -> TE
     lower = pts(2+nu:1+nu+nl, :);        % LE -> TE
     pts = [flipud(upper); lower(2:end, :)];   % TE(up) -> LE -> TE(low)
+end
+end
+
+
+function cp = read_cp(path, pts, chord)
+% Read an XFOIL Cp file ('x Cp' or 'x y Cp' rows; header and comment lines
+% are skipped) and return one Cp per airfoil point, in the airfoil's order.
+% pts are the airfoil points already placed on the chord (LE at origin).
+fid = fopen(path, 'r');
+if fid < 0, error('Cannot open Cp file %s', path); end
+rows = zeros(0, 2);
+while true
+    ln = fgetl(fid);
+    if ~ischar(ln), break; end
+    ln = strtrim(strrep(ln, ',', ' '));
+    if isempty(ln) || ~isempty(regexp(ln, '^[#!%]', 'once')) || ...
+            ~isempty(regexp(ln, '[A-CF-Za-cf-z]', 'once'))
+        continue;                              % comment or header line
+    end
+    v = sscanf(ln, '%f');
+    if numel(v) == 2 || numel(v) == 3
+        rows(end+1, :) = [v(1), v(end)]; %#ok<AGROW>
+    end
+end
+fclose(fid);
+if size(rows, 1) < 10
+    error('Cp file %s has only %d usable rows (need x Cp or x y Cp columns).', path, size(rows, 1));
+end
+xc = rows(:,1);  cpv = rows(:,2);
+xa = pts(:,1) / chord;                         % airfoil x/c, LE at 0
+xc = (xc - min(xc)) / (max(xc) - min(xc));     % Cp file x/c, LE at 0
+tol = 2e-3;
+if numel(xc) == numel(xa) && max(abs(xc - xa)) < tol
+    cp = cpv;
+elseif numel(xc) == numel(xa) && max(abs(flipud(xc) - xa)) < tol
+    cp = flipud(cpv);
+    warning('Cp file is ordered opposite to the airfoil points; reversed it.');
+else
+    % different point set: split each at its own leading edge and
+    % interpolate in x/c on the upper and lower surfaces separately
+    warning(['Cp file has %d points and the airfoil %d, or their x stations differ; ' ...
+             'Cp was interpolated in x/c per surface. Check summary.png.'], numel(xc), numel(xa));
+    [~, ic] = min(xc);  [~, ia] = min(xa);
+    if mean(cpv(1:ic)) > mean(cpv(ic:end))     % make the Cp file upper-first
+        xc = flipud(xc);  cpv = flipud(cpv);  [~, ic] = min(xc);
+    end
+    cp = zeros(size(xa));
+    [xu, iu] = unique(xc(1:ic));    cu = cpv(1:ic);    cu = cu(iu);
+    [xl, il] = unique(xc(ic:end));  cl = cpv(ic:end);  cl = cl(il);
+    cp(1:ia)   = interp1(xu, cu, min(max(xa(1:ia), xu(1)), xu(end)));
+    cp(ia:end) = interp1(xl, cl, min(max(xa(ia:end), xl(1)), xl(end)));
 end
 end
 
@@ -483,4 +579,126 @@ axis equal;
 title(ttl);
 print(f, path, '-dpng', '-r150');
 close(f);
+end
+
+function make_summary(seg, inner, chord, units, wall, pbar, ploc, punit, path)
+% One figure: the geometry in relative coordinates (everything divided by
+% the chord, leading edge at the origin) and, when pressure is given, the
+% pressure on the segments.
+n = numel(seg);  nUp = floor(n/2);
+hasP = ~isempty(pbar);
+C_SUC = [0.75 0.22 0.17];  C_PRE = [0.12 0.37 0.66];  C_BODY = [0.17 0.17 0.17];
+
+% dense outline and segment end points, relative to the chord
+XY = zeros(0, 2);
+for k = 1:n, XY = [XY; seg(k).xy / chord]; end %#ok<AGROW>
+brk = zeros(n + 1, 2);
+for k = 1:n, brk(k, :) = seg(k).xy(1, :) / chord; end
+brk(n + 1, :) = seg(n).xy(end, :) / chord;
+
+% thickness and camber from the upper and lower surfaces at common x/c
+up = zeros(0, 2);  lo = zeros(0, 2);
+for k = 1:nUp,   up = [up; seg(k).xy / chord]; end %#ok<AGROW>
+for k = nUp+1:n, lo = [lo; seg(k).xy / chord]; end %#ok<AGROW>
+[xu, iu] = unique(up(:,1));  yu = up(iu, 2);
+[xl, il] = unique(lo(:,1));  yl = lo(il, 2);
+xq = linspace(max(xu(1), xl(1)), min(xu(end), xl(end)), 400).';
+yuq = interp1(xu, yu, xq);  ylq = interp1(xl, yl, xq);
+thick = yuq - ylq;  camber = 0.5 * (yuq + ylq);
+[tmax, it] = max(thick);  [cmax, ic] = max(camber);
+
+if hasP, rows = 3; hgt = 900; else, rows = 1; hgt = 360; end
+f = figure('Visible', 'off', 'Position', [100 100 1000 hgt]);
+
+% ---- 1. relative geometry
+subplot(rows, 1, 1);  hold on;
+plot(XY(:,1), XY(:,2), '-', 'Color', C_BODY, 'LineWidth', 1.3);
+plot(xq, camber, '--', 'Color', [0.45 0.45 0.45], 'LineWidth', 0.8);
+if ~isempty(inner)
+    plot([inner(:,1); inner(1,1)] / chord, [inner(:,2); inner(1,2)] / chord, '-', ...
+         'Color', [0.20 0.55 0.30], 'LineWidth', 1.0);
+end
+plot(brk(:,1), brk(:,2), '.', 'Color', C_SUC, 'MarkerSize', 9);
+plot([xq(it) xq(it)], [ylq(it) yuq(it)], '-', 'Color', C_PRE, 'LineWidth', 1.2);
+plot(0, 0, 'ko', 'MarkerSize', 6, 'MarkerFaceColor', 'k');
+plot(brk(1,1), brk(1,2), 'ks', 'MarkerSize', 6, 'MarkerFaceColor', 'k');
+text(0.01, -0.035, 'LE (0, 0)', 'FontSize', 8);
+text(brk(1,1) - 0.01, brk(1,2) - 0.035, 'TE', 'FontSize', 8, 'HorizontalAlignment', 'right');
+text(xq(it) + 0.01, ylq(it) - 0.025, sprintf('max thickness %.1f%% c at x/c = %.2f', ...
+     100 * tmax, xq(it)), 'FontSize', 8, 'Color', C_PRE);
+grid on;
+set(gca, 'XLim', [-0.05 1.05], 'YLim', [min(XY(:,2)) - 0.06, max(XY(:,2)) + 0.03], ...
+         'DataAspectRatio', [1 1 1]);
+xlabel('x / c');  ylabel('y / c');
+ttl = sprintf(['Relative geometry: chord c = %g %s, %d segments (dots = break points), ' ...
+               'max camber %.1f%% c at x/c = %.2f'], chord, units, n, 100 * cmax, xq(ic));
+if ~isempty(inner)
+    ttl = sprintf('%s, inner wall %.4f c (%g %s)', ttl, wall / chord, wall, units);
+end
+title(ttl, 'FontSize', 9);
+
+if hasP
+    pmax = max(abs(pbar));  if pmax == 0, pmax = 1; end
+    if strcmp(punit, 'Cp'), plabel = 'Cp'; else, plabel = sprintf('pressure [%s]', punit); end
+
+    % ---- 2. average pressure on each segment, drawn on the airfoil
+    % p < 0 (suction) pulls OUTWARD: red arrow pointing away from the surface.
+    % p > 0 pushes INTO the surface: blue arrow pointing at the surface.
+    subplot(rows, 1, 2);  hold on;
+    plot(XY(:,1), XY(:,2), '-', 'Color', C_BODY, 'LineWidth', 1.3);
+    scale = 0.25 / pmax;                           % longest arrow = 0.25 chord
+    tips = XY;
+    for k = 1:n
+        m = seg(k).mid / chord;  len = abs(pbar(k)) * scale;  nv = seg(k).n;
+        far = m + len * nv;                        % arrow end away from the surface
+        tips(end+1, :) = far; %#ok<AGROW>
+        if pbar(k) < 0
+            draw_arrow(m, far, C_SUC);             % tail on the surface, head outward
+        else
+            draw_arrow(far, m, C_PRE);             % head on the surface
+        end
+    end
+    plot(brk(:,1), brk(:,2), '.', 'Color', C_BODY, 'MarkerSize', 6);
+    grid on;
+    set(gca, 'XLim', [min(tips(:,1)) - 0.05, max(tips(:,1)) + 0.05], ...
+             'YLim', [min(tips(:,2)) - 0.03, max(tips(:,2)) + 0.03], ...
+             'DataAspectRatio', [1 1 1]);
+    xlabel('x / c');  ylabel('y / c');
+    title(sprintf(['Average %s on each segment (red = suction, pulls outward; blue = pushes ' ...
+                   'into the surface); longest arrow = %.4g'], plabel, pmax), 'FontSize', 9);
+
+    % ---- 3. average vs local pressure along the chord
+    subplot(rows, 1, 3);  hold on;
+    hl = zeros(1, 4);
+    for k = 1:n
+        if k <= nUp, col = C_SUC; else, col = C_PRE; end
+        xk = seg(k).xy(:,1) / chord;
+        h1 = plot(xk, ploc{k}, '-', 'Color', col, 'LineWidth', 0.8);
+        h2 = plot([xk(1) xk(end)], [pbar(k) pbar(k)], '-', 'Color', col, 'LineWidth', 2.4);
+        if k == 1,       hl(1) = h1;  hl(2) = h2; end
+        if k == nUp + 1, hl(3) = h1;  hl(4) = h2; end
+    end
+    plot([0 1], [0 0], 'k:');
+    set(gca, 'YDir', 'reverse');                   % suction upward, as for Cp plots
+    grid on;  xlim([-0.05 1.05]);
+    xlabel('x / c');  ylabel(plabel);
+    legend(hl, {'upper, local', 'upper, segment average', 'lower, local', ...
+                'lower, segment average'}, 'Location', 'northeast');
+    title('Local (thin) and segment-average (thick) pressure; suction is up', 'FontSize', 9);
+end
+
+print(f, path, '-dpng', '-r150');
+close(f);
+end
+
+function draw_arrow(a, b, col)
+% Arrow from a to b drawn with plain lines, so it looks the same in MATLAB
+% and Octave. The head is 30% of the arrow length, at most 0.02.
+d = b - a;  len = norm(d);
+if len <= 0, return; end
+u = d / len;  w = [-u(2), u(1)];
+h = min(0.3 * len, 0.02);
+p1 = b - h * u + 0.4 * h * w;  p2 = b - h * u - 0.4 * h * w;
+plot([a(1) b(1)], [a(2) b(2)], '-', 'Color', col, 'LineWidth', 1.0);
+plot([p1(1) b(1) p2(1)], [p1(2) b(2) p2(2)], '-', 'Color', col, 'LineWidth', 1.0);
 end

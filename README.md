@@ -38,6 +38,13 @@ or in MATLAB / Octave:
 airfoil_discretize('e423.dat', 25.5, 40, 'cosine', 'in', 'out', [], 0.3);
 ```
 
+The MATLAB version can also read the Cp file and graph the pressure on the segments
+(last number is the Cp-to-pressure multiplier n·K·q in Pa):
+
+```matlab
+airfoil_discretize('e423.dat', 25.5, 40, 'cosine', 'in', 'out', '../e423_a12.cp', 0.3, 200, 16993.2);
+```
+
 ## What you get
 
 | Output | From | Contents |
@@ -48,6 +55,7 @@ airfoil_discretize('e423.dat', 25.5, 40, 'cosine', 'in', 'out', [], 0.3);
 | `Airfoil_polyline_discretization/out/outline.dxf` | Part 2 | N splines (layer `SEGMENTS`) + inner wall as one closed polyline (layer `INNER`) |
 | `.../out/segments.csv`, `.../out/inner_polyline.csv` | Part 2 | per-segment length, midpoint, normal; inner wall vertices |
 | `.../out/outline.png` | Part 2 | check plot of the outline, break points and inner wall |
+| `.../out/summary.png` | Part 2, MATLAB only | relative geometry (x/c, y/c, thickness, camber, inner wall) and, with a Cp file, the pressure on each segment |
 
 ## Where things are
 
